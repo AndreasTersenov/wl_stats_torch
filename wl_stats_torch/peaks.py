@@ -180,7 +180,8 @@ def find_peaks_batch(
 def peaks_to_histogram(
     peak_heights: torch.Tensor,
     bins: torch.Tensor,
-    digitize_mode: bool = True
+    digitize_mode: bool = True,
+    clamp_overflow: bool = False
 ) -> torch.Tensor:
     """
     Compute histogram of peak heights.
@@ -192,6 +193,9 @@ def peaks_to_histogram(
         bins: Bin edges, shape (n_bins+1,) 
         digitize_mode: If True, use np.digitize-like behavior (default).
                       If False, use torch.histogram behavior.
+        clamp_overflow: If True, values outside bin range are included in edge bins.
+                       If False (default), values outside range are excluded.
+                       False matches cosmostat/pycs behavior.
     
     Returns:
         Histogram counts, shape (n_bins,)
@@ -200,6 +204,8 @@ def peaks_to_histogram(
         To match pycs behavior with np.histogram:
         - Values x where bins[i] <= x < bins[i+1] go into bin i
         - The rightmost bin includes the right edge: bins[-2] <= x <= bins[-1]
+        - When clamp_overflow=False: values outside [bins[0], bins[-1]] are excluded
+        - When clamp_overflow=True: values < bins[0] go to first bin, > bins[-1] go to last bin
     """
     if peak_heights.numel() == 0:
         return torch.zeros(len(bins) - 1, device=bins.device, dtype=torch.float32)
@@ -217,22 +223,44 @@ def peaks_to_histogram(
         if rightmost_mask.any():
             bin_indices[rightmost_mask] = n_bins
         
-        # Clip to valid range [1, n_bins] (searchsorted returns 0 for values < bins[0])
-        bin_indices = torch.clamp(bin_indices, 1, n_bins)
-        
-        # Count peaks in each bin (shift by -1 since bins start at index 1)
-        counts = torch.bincount(
-            bin_indices - 1,
-            minlength=n_bins
-        )
+        if clamp_overflow:
+            # Clip to valid range [1, n_bins] - forces overflow into edge bins
+            bin_indices = torch.clamp(bin_indices, 1, n_bins)
+            # Count peaks in each bin (shift by -1 since bins start at index 1)
+            counts = torch.bincount(
+                bin_indices - 1,
+                minlength=n_bins
+            )
+        else:
+            # Only count values within valid range [1, n_bins] - excludes overflow
+            # This matches cosmostat behavior
+            valid_mask = (bin_indices >= 1) & (bin_indices <= n_bins)
+            if valid_mask.any():
+                counts = torch.bincount(
+                    bin_indices[valid_mask] - 1,
+                    minlength=n_bins
+                )
+            else:
+                counts = torch.zeros(n_bins, device=bins.device, dtype=torch.long)
     else:
         # Original torch.searchsorted behavior
         bin_indices = torch.searchsorted(bins, peak_heights, right=False)
-        bin_indices = torch.clamp(bin_indices, 1, len(bins) - 1)
-        counts = torch.bincount(
-            bin_indices - 1,
-            minlength=len(bins) - 1
-        )
+        
+        if clamp_overflow:
+            bin_indices = torch.clamp(bin_indices, 1, len(bins) - 1)
+            counts = torch.bincount(
+                bin_indices - 1,
+                minlength=len(bins) - 1
+            )
+        else:
+            valid_mask = (bin_indices >= 1) & (bin_indices <= len(bins) - 1)
+            if valid_mask.any():
+                counts = torch.bincount(
+                    bin_indices[valid_mask] - 1,
+                    minlength=len(bins) - 1
+                )
+            else:
+                counts = torch.zeros(len(bins) - 1, device=bins.device, dtype=torch.long)
     
     return counts[:n_bins].float()
 
@@ -245,7 +273,8 @@ def mono_scale_peaks_smoothed(
     bins: Optional[torch.Tensor] = None,
     min_snr: float = -2.0,
     max_snr: float = 6.0,
-    n_bins: int = 31
+    n_bins: int = 31,
+    clamp_overflow: bool = False
 ) -> Tuple[torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
     Compute mono-scale peak counts with Gaussian smoothing.
@@ -264,6 +293,9 @@ def mono_scale_peaks_smoothed(
         min_snr: Minimum SNR for histogram (if bins not provided)
         max_snr: Maximum SNR for histogram (if bins not provided)
         n_bins: Number of bins for histogram (if bins not provided)
+        clamp_overflow: If True, peaks outside SNR range are included in edge bins.
+                       If False (default), peaks outside range are excluded.
+                       False matches cosmostat/pycs behavior.
     
     Returns:
         Tuple of (bin_centers, counts, (peak_positions, peak_heights))
@@ -362,7 +394,7 @@ def mono_scale_peaks_smoothed(
     bin_centers = 0.5 * (bins[:-1] + bins[1:])
     
     # Compute histogram
-    counts = peaks_to_histogram(peak_heights, bins)
+    counts = peaks_to_histogram(peak_heights, bins, clamp_overflow=clamp_overflow)
     
     return bin_centers, counts, (peak_positions, peak_heights)
 
