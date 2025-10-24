@@ -43,7 +43,8 @@ class WLStatistics:
         self,
         n_scales: int = 5,
         device: Optional[torch.device] = None,
-        pixel_arcmin: float = 1.0
+        pixel_arcmin: float = 1.0,
+        dtype: torch.dtype = torch.float64
     ):
         """
         Initialize weak lensing statistics calculator.
@@ -52,6 +53,7 @@ class WLStatistics:
             n_scales: Number of wavelet scales (including coarse)
             device: torch device for computation. If None, auto-detects.
             pixel_arcmin: Pixel resolution in arcminutes
+            dtype: Data type for computations. Default: torch.float64 to match NumPy.
         """
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -59,9 +61,10 @@ class WLStatistics:
         self.n_scales = n_scales
         self.device = device
         self.pixel_arcmin = pixel_arcmin
+        self.dtype = dtype
         
         # Initialize starlet transform
-        self.starlet = Starlet2D(n_scales=n_scales, device=device)
+        self.starlet = Starlet2D(n_scales=n_scales, device=device, dtype=dtype)
         
         # Storage for computed results
         self.wavelet_coeffs = None
@@ -100,9 +103,9 @@ class WLStatistics:
                 - 'noise_levels': Noise std for each coefficient (n_scales, H, W)
                 - 'snr': Signal-to-noise ratio (n_scales, H, W)
         """
-        # Ensure tensors are on correct device
-        image = image.to(self.device)
-        noise_sigma = noise_sigma.to(self.device)
+        # Ensure tensors are on correct device and dtype
+        image = image.to(self.device, dtype=self.dtype)
+        noise_sigma = noise_sigma.to(self.device, dtype=self.dtype)
         if mask is not None:
             mask = mask.to(self.device)
         

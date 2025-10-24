@@ -180,37 +180,61 @@ def find_peaks_batch(
 def peaks_to_histogram(
     peak_heights: torch.Tensor,
     bins: torch.Tensor,
+    digitize_mode: bool = True
 ) -> torch.Tensor:
     """
     Compute histogram of peak heights.
     
+    This function mimics np.histogram behavior to match pycs output.
+    
     Args:
         peak_heights: Tensor of peak values, shape (N,)
-        bins: Bin edges, shape (n_bins+1,)
+        bins: Bin edges, shape (n_bins+1,) 
+        digitize_mode: If True, use np.digitize-like behavior (default).
+                      If False, use torch.histogram behavior.
     
     Returns:
         Histogram counts, shape (n_bins,)
+    
+    Note:
+        To match pycs behavior with np.histogram:
+        - Values x where bins[i] <= x < bins[i+1] go into bin i
+        - The rightmost bin includes the right edge: bins[-2] <= x <= bins[-1]
     """
     if peak_heights.numel() == 0:
-        return torch.zeros(len(bins) - 1, device=bins.device)
+        return torch.zeros(len(bins) - 1, device=bins.device, dtype=torch.float32)
     
-    # Use torch.histc or manual binning
-    # histc doesn't work well with custom bins, so we'll use searchsorted
     bins = bins.to(peak_heights.device)
+    n_bins = len(bins) - 1
     
-    # Find which bin each peak belongs to
-    bin_indices = torch.searchsorted(bins, peak_heights, right=False)
+    if digitize_mode:
+        # Use searchsorted with right=True to match np.histogram behavior
+        # np.histogram uses bins[i] <= x < bins[i+1], except rightmost bin includes right edge
+        bin_indices = torch.searchsorted(bins, peak_heights, right=True)
+        
+        # Handle rightmost edge: values exactly equal to bins[-1] should go in last bin
+        rightmost_mask = (peak_heights == bins[-1])
+        if rightmost_mask.any():
+            bin_indices[rightmost_mask] = n_bins
+        
+        # Clip to valid range [1, n_bins] (searchsorted returns 0 for values < bins[0])
+        bin_indices = torch.clamp(bin_indices, 1, n_bins)
+        
+        # Count peaks in each bin (shift by -1 since bins start at index 1)
+        counts = torch.bincount(
+            bin_indices - 1,
+            minlength=n_bins
+        )
+    else:
+        # Original torch.searchsorted behavior
+        bin_indices = torch.searchsorted(bins, peak_heights, right=False)
+        bin_indices = torch.clamp(bin_indices, 1, len(bins) - 1)
+        counts = torch.bincount(
+            bin_indices - 1,
+            minlength=len(bins) - 1
+        )
     
-    # Clip to valid range [1, n_bins]
-    bin_indices = torch.clamp(bin_indices, 1, len(bins) - 1)
-    
-    # Count peaks in each bin (shift by -1 since searchsorted returns 1-indexed)
-    counts = torch.bincount(
-        bin_indices - 1,
-        minlength=len(bins) - 1
-    )
-    
-    return counts[:len(bins)-1].float()
+    return counts[:n_bins].float()
 
 
 def mono_scale_peaks_smoothed(
@@ -229,9 +253,11 @@ def mono_scale_peaks_smoothed(
     This applies Gaussian smoothing to the image, computes SNR, finds peaks,
     and returns histogram of peak counts.
     
+    NOTE: sigma_noise can now be a tensor for spatially-varying noise maps.
+    
     Args:
         image: Input image (H, W)
-        sigma_noise: Standard deviation of noise
+        sigma_noise: Standard deviation of noise (scalar or H, W tensor)
         smoothing_sigma: Std dev for Gaussian smoothing (in pixels)
         mask: Optional observation mask
         bins: Optional custom bin edges for histogram
@@ -244,6 +270,16 @@ def mono_scale_peaks_smoothed(
     """
     device = image.device
     
+    # Handle sigma_noise as scalar or tensor
+    if isinstance(sigma_noise, (int, float)):
+        sigma_noise_map = torch.full_like(image, sigma_noise)
+        uniform_noise = True
+    else:
+        sigma_noise_map = sigma_noise.to(device)
+        if sigma_noise_map.ndim == 4:
+            sigma_noise_map = sigma_noise_map.squeeze(0).squeeze(0)
+        uniform_noise = False
+    
     # Create Gaussian kernel for smoothing
     if image.ndim == 2:
         image = image.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
@@ -253,8 +289,9 @@ def mono_scale_peaks_smoothed(
     if kernel_size % 2 == 0:
         kernel_size += 1
     
-    # Create 1D Gaussian
-    x = torch.arange(kernel_size, dtype=torch.float32, device=device)
+    # Create 1D Gaussian with same dtype as image
+    image_dtype = image.dtype if image.ndim == 4 else image.dtype
+    x = torch.arange(kernel_size, dtype=image_dtype, device=device)
     x = x - kernel_size // 2
     gaussian_1d = torch.exp(-x**2 / (2 * smoothing_sigma**2))
     gaussian_1d = gaussian_1d / gaussian_1d.sum()
@@ -279,14 +316,34 @@ def mono_scale_peaks_smoothed(
     )
     
     # Propagate noise through smoothing
-    # Variance after convolution with normalized kernel G:
-    # var(G * X) = sigma^2 * sum(G^2)
-    gaussian_squared = gaussian_2d ** 2
-    noise_factor_squared = gaussian_squared.sum()
-    smoothed_noise_sigma = sigma_noise * torch.sqrt(noise_factor_squared)
+    if uniform_noise:
+        # Fast path for uniform noise: var(G * X) = sigma^2 * sum(G^2)
+        gaussian_squared = gaussian_2d ** 2
+        noise_factor_squared = gaussian_squared.sum()
+        smoothed_noise_sigma = sigma_noise_map[0, 0].item() * torch.sqrt(noise_factor_squared)
+        smoothed_noise_map = torch.full_like(image_smoothed, smoothed_noise_sigma)
+    else:
+        # Proper variance propagation for non-uniform noise (matches pycs)
+        # var(smoothed) = conv(variance_map, G^2)
+        variance_map = (sigma_noise_map ** 2).unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
+        gaussian_squared = gaussian_2d ** 2
+        
+        if padding > 0:
+            variance_padded = F.pad(variance_map, (padding, padding, padding, padding), mode='reflect')
+        else:
+            variance_padded = variance_map
+        
+        smoothed_variance = F.conv2d(
+            variance_padded,
+            gaussian_squared,
+            bias=None,
+            stride=1,
+            padding=0,
+        )
+        smoothed_noise_map = torch.sqrt(smoothed_variance)
     
     # Compute SNR
-    snr_image = image_smoothed / smoothed_noise_sigma.item()
+    snr_image = image_smoothed / smoothed_noise_map
     snr_image = snr_image.squeeze(0).squeeze(0)  # Back to (H, W)
     
     # Find peaks
