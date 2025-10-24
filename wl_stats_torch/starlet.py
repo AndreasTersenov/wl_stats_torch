@@ -39,7 +39,7 @@ class Starlet2D(nn.Module):
         >>> coeffs = starlet(image)  # (batch, n_scales, H, W)
     """
     
-    def __init__(self, n_scales: int = 5, device: Optional[torch.device] = None):
+    def __init__(self, n_scales: int = 5, device: Optional[torch.device] = None, dtype: torch.dtype = torch.float64):
         """
         Initialize the Starlet2D transform.
         
@@ -47,6 +47,7 @@ class Starlet2D(nn.Module):
             n_scales: Total number of scales (detail scales + 1 coarse scale).
                      For example, n_scales=5 gives 4 detail scales and 1 coarse scale.
             device: torch device for computation. If None, uses CPU.
+            dtype: Data type for computations. Default: torch.float64 to match NumPy.
         """
         super(Starlet2D, self).__init__()
         
@@ -55,12 +56,13 @@ class Starlet2D(nn.Module):
         
         self.n_scales = n_scales
         self.device = device if device is not None else torch.device('cpu')
+        self.dtype = dtype
         
         # Define the 1D B3-spline kernel coefficients
         # These are the coefficients for the B3-spline: [1/16, 1/4, 3/8, 1/4, 1/16]
         kernel_1d = torch.tensor(
             [1.0/16.0, 1.0/4.0, 3.0/8.0, 1.0/4.0, 1.0/16.0],
-            dtype=torch.float32,
+            dtype=self.dtype,
             device=self.device
         )
         
@@ -93,7 +95,8 @@ class Starlet2D(nn.Module):
                 padding=padding,
                 dilation=dilation,
                 bias=False,
-                padding_mode='reflect'
+                padding_mode='reflect',
+                dtype=self.dtype  # Use the specified dtype
             )
             
             # Set the kernel weights and freeze them (non-trainable)
