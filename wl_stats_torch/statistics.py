@@ -353,6 +353,8 @@ class WLStatistics:
         max_snr: float = 6.0,
         n_bins: int = 31,
         l1_nbins: int = 40,
+        l1_min_snr: Optional[float] = None,
+        l1_max_snr: Optional[float] = None,
         compute_mono: bool = True,
         mono_smoothing_sigma: float = 2.0,
         verbose: bool = False,
@@ -365,10 +367,12 @@ class WLStatistics:
             image: Convergence map (H, W)
             noise_sigma: Noise std map (H, W) or scalar
             mask: Optional observation mask (H, W)
-            min_snr: Minimum SNR for histograms
-            max_snr: Maximum SNR for histograms
+            min_snr: Minimum SNR for peak count histograms
+            max_snr: Maximum SNR for peak count histograms
             n_bins: Number of bins for peak histograms
             l1_nbins: Number of bins for L1-norm
+            l1_min_snr: Minimum SNR for L1-norm (if None, uses min_snr)
+            l1_max_snr: Maximum SNR for L1-norm (if None, uses max_snr)
             compute_mono: Whether to compute mono-scale peaks
             mono_smoothing_sigma: Smoothing scale for mono-scale peaks
             verbose: Print progress information
@@ -384,6 +388,10 @@ class WLStatistics:
         # Convert noise_sigma to tensor if scalar
         if isinstance(noise_sigma, (int, float)):
             noise_sigma = torch.full_like(image, noise_sigma)
+        
+        # Use peak SNR ranges for L1-norm if not separately specified
+        l1_min_snr_use = l1_min_snr if l1_min_snr is not None else min_snr
+        l1_max_snr_use = l1_max_snr if l1_max_snr is not None else max_snr
         
         # 1. Wavelet transform and SNR
         if verbose:
@@ -413,8 +421,8 @@ class WLStatistics:
         l1_bins, l1_norms = self.compute_wavelet_l1_norms(
             n_bins=l1_nbins,
             mask=mask,
-            min_snr=min_snr,
-            max_snr=max_snr,
+            min_snr=l1_min_snr_use,
+            max_snr=l1_max_snr_use,
             clamp_overflow=clamp_overflow
         )
         results['l1_bins'] = l1_bins
