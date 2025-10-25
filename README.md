@@ -1,5 +1,13 @@
 # Weak Lensing Summary Statistics (PyTorch)
 
+[![Tests](https://github.com/AndreasTersenov/wl_stats_torch/actions/workflows/tests.yml/badge.svg)](https://github.com/AndreasTersenov/wl_stats_torch/actions/workflows/tests.yml)
+[![Lint](https://github.com/AndreasTersenov/wl_stats_torch/actions/workflows/lint.yml/badge.svg)](https://github.com/AndreasTersenov/wl_stats_torch/actions/workflows/lint.yml)
+[![Documentation](https://github.com/AndreasTersenov/wl_stats_torch/actions/workflows/docs.yml/badge.svg)](https://github.com/AndreasTersenov/wl_stats_torch/actions/workflows/docs.yml)
+[![codecov](https://codecov.io/gh/AndreasTersenov/wl_stats_torch/branch/main/graph/badge.svg)](https://codecov.io/gh/AndreasTersenov/wl_stats_torch)
+[![PyPI version](https://badge.fury.io/py/wl-stats-torch.svg)](https://badge.fury.io/py/wl-stats-torch)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A GPU-accelerated PyTorch implementation for computing weak lensing summary statistics including:
 - Mono-scale peak counts
 - Wavelet (Starlet) peak counts  
