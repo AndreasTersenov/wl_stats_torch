@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "GPU-accelerated weak lensing summary statistics with PyTorch"
 readme = "README.md"
 authors = [
-    {name = "Andreas Tersenov", email = "your.email@example.com"}
+    {name = "Andreas Tersenov", email = "andrewtersenov@gmail.com"}
 ]
 license = {text = "MIT"}
 classifiers = [
