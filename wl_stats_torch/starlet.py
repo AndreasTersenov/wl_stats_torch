@@ -17,7 +17,52 @@ import torch.nn.functional as F
 from typing import Optional, Tuple
 import math
 import numpy as np
-from scipy import signal as scipy_signal
+
+
+def fft_convolve2d(signal: torch.Tensor, kernel: torch.Tensor) -> torch.Tensor:
+    """
+    Perform 2D convolution using FFT (equivalent to scipy.signal.fftconvolve with mode='same').
+    
+    This function stays entirely in PyTorch, avoiding CPU transfers and numpy conversions.
+    It matches scipy's behavior for 'same' mode convolution.
+    
+    Args:
+        signal: Input signal, shape (H, W)
+        kernel: Convolution kernel, shape (H, W)
+    
+    Returns:
+        Convolved result, shape (H, W), same size as input signal
+    """
+    # Get shapes
+    s_h, s_w = signal.shape
+    k_h, k_w = kernel.shape
+    
+    # For 'same' mode, we need to pad to avoid circular convolution artifacts
+    # and then extract the center region
+    pad_h = k_h - 1
+    pad_w = k_w - 1
+    
+    # FFT size should be at least signal_size + kernel_size - 1 for linear convolution
+    fft_h = s_h + pad_h
+    fft_w = s_w + pad_w
+    
+    # Compute FFTs using rfft2 (optimized for real inputs)
+    signal_fft = torch.fft.rfft2(signal, s=(fft_h, fft_w))
+    kernel_fft = torch.fft.rfft2(kernel, s=(fft_h, fft_w))
+    
+    # Multiply in frequency domain
+    result_fft = signal_fft * kernel_fft
+    
+    # Inverse FFT
+    result = torch.fft.irfft2(result_fft, s=(fft_h, fft_w))
+    
+    # Extract 'same' mode result (center region matching signal size)
+    # This matches scipy's centering behavior
+    start_h = pad_h // 2
+    start_w = pad_w // 2
+    result_same = result[start_h:start_h + s_h, start_w:start_w + s_w]
+    
+    return result_same
 
 
 class Starlet2D(nn.Module):
@@ -304,27 +349,21 @@ class Starlet2D(nn.Module):
         impulse_coeffs_squared = impulse_coeffs ** 2  # (1, n_scales, H, W)
         
         # For each scale, convolve the variance map with the squared impulse response
-        # Use scipy's fftconvolve to match CosmoStat exactly
+        # Use PyTorch FFT convolution to stay on GPU and avoid numpy conversion
         variance_coeffs = []
         
-        # Convert to numpy for scipy convolution
-        variance_map_np = variance_map[0, 0, :, :].cpu().numpy()
-        impulse_squared_np = impulse_coeffs_squared[0, :, :, :].cpu().numpy()
+        # Extract the variance map for convolution (no need to convert to numpy)
+        variance_map_2d = variance_map[0, 0, :, :]  # (H, W)
         
         for scale_idx in range(self.n_scales):
             # Get the squared impulse response for this scale
-            kernel = impulse_squared_np[scale_idx, :, :]  # (H, W)
+            kernel = impulse_coeffs_squared[0, scale_idx, :, :]  # (H, W)
             
-            # Convolve using scipy's fftconvolve (mode='same')
-            var_scale_np = scipy_signal.fftconvolve(variance_map_np, kernel, mode='same')
+            # Convolve using PyTorch FFT (equivalent to scipy's mode='same')
+            var_scale = fft_convolve2d(variance_map_2d, kernel)
             
             # Clamp to avoid negative values due to numerical errors
-            var_scale_np = np.maximum(var_scale_np, 0)
-            
-            # Convert back to torch
-            var_scale = torch.from_numpy(var_scale_np).to(
-                device=self.device, dtype=self.dtype
-            )
+            var_scale = torch.clamp(var_scale, min=0.0)
             
             # Replicate for batch dimension
             var_scale_batch = var_scale.unsqueeze(0).unsqueeze(0).repeat(batch_size, 1, 1, 1)
