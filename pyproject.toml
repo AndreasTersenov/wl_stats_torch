@@ -14,7 +14,6 @@ license = {text = "MIT"}
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
@@ -40,14 +39,16 @@ dev = [
     "black>=22.0.0",
     "isort>=5.10.0",
     "flake8>=4.0.0",
-    "jupyter>=1.0.0",
-    "ipython>=8.0.0",
+    "sphinx>=6.0.0",
+    "sphinx-rtd-theme>=1.0.0",
+    "sphinx-autodoc-typehints>=1.19.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/wl-stats-torch"
-Documentation = "https://github.com/yourusername/wl-stats-torch"
-Repository = "https://github.com/yourusername/wl-stats-torch"
+Homepage = "https://github.com/AndreasTersenov/wl_stats_torch"
+Documentation = "https://wl-stats-torch.readthedocs.io"
+Repository = "https://github.com/AndreasTersenov/wl_stats_torch"
+Issues = "https://github.com/AndreasTersenov/wl_stats_torch/issues"
 
 [tool.setuptools]
 packages = ["wl_stats_torch"]
@@ -65,4 +66,23 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
-addopts = "-v --cov=wl_stats_torch --cov-report=html --cov-report=term"
+addopts = "-v --cov=wl_stats_torch --cov-report=html --cov-report=term-missing"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["wl_stats_torch"]
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "if typing.TYPE_CHECKING:",
+]
+
