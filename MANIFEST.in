@@ -1,0 +1,14 @@
+include README.md
+include LICENSE
+include pyproject.toml
+
+recursive-include docs-md *.md
+recursive-include wl_stats_torch *.py
+recursive-include tests *.py
+recursive-include docs *.rst *.py *.md Makefile
+recursive-include examples *.py
+recursive-include notebooks *.ipynb
+
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co]
+recursive-exclude * .DS_Store

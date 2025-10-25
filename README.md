@@ -95,11 +95,32 @@ results = stats.compute_all_statistics(kappa, sigma)
 
 ## Examples
 
-See `examples/` directory for:
+See the `examples/` directory for Python scripts and `notebooks/` for Jupyter notebooks:
+
+**Python Scripts** (`examples/`):
 - `basic_usage.py` - Simple example with synthetic data
 - `cfis_example.py` - Realistic CFIS-like simulation
 - `batch_processing.py` - Processing multiple maps efficiently
-- `visualization.py` - Plotting results
+
+**Jupyter Notebooks** (`notebooks/`):
+- `cuda_batch_demo.ipynb` - GPU batch processing demonstration
+- `des_mock_demo.ipynb` - DES mock catalog analysis
+- `pycs_demo.ipynb` - PyCS integration example
+
+## Documentation
+
+- 📖 **User Guide**: See `docs-md/` directory for detailed documentation
+- 🚀 **Quick Start**: `docs-md/QUICKSTART.md`
+- 📦 **Installation**: `docs-md/INSTALL.md`
+- 🔧 **Contributing**: `docs-md/CONTRIBUTING.md`
+- 🔍 **API Reference**: `docs-md/API.md`
+- ✅ **Test Fixes**: `docs-md/TEST_FIXES.md`
+
+Build the full documentation with Sphinx:
+```bash
+make docs
+# Open docs/_build/html/index.html
+```
 
 ## Citation
 
