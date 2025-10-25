@@ -119,9 +119,10 @@ class TestPeakDetection:
 
         counts = peaks_to_histogram(heights, bins)
 
-        assert len(counts) == 2  # n_bins - 1
-        assert counts[0] == 1  # One peak in [0, 2)
-        assert counts[1] == 3  # Three peaks in [2, 4)
+        assert len(counts) == 3  # n_bins = len(bins) - 1
+        assert counts[0] == 1  # One peak in [0, 2): 1.5
+        assert counts[1] == 2  # Two peaks in [2, 4): 2.5, 3.5
+        assert counts[2] == 1  # One peak in [4, 6]: 4.5
 
     def test_peaks_to_histogram_empty(self, device):
         """Test histogram with no peaks."""

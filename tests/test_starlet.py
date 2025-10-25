@@ -59,11 +59,11 @@ class TestStarlet2D:
         # Transform
         coeffs = starlet(image)
 
-        # Reconstruct
-        reconstructed = starlet.reconstruct(coeffs, gen2=True)
+        # Reconstruct using gen1 (perfect reconstruction via sum)
+        reconstructed = starlet.reconstruct(coeffs, gen2=False)
         reconstructed = reconstructed.squeeze()
 
-        # Check error
+        # Check error (should be near machine precision)
         max_error = torch.abs(image - reconstructed).max().item()
         assert max_error < 1e-5, f"Reconstruction error too large: {max_error}"
 

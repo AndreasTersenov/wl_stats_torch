@@ -89,7 +89,7 @@ class Starlet2D(nn.Module):
         self,
         n_scales: int = 5,
         device: Optional[torch.device] = None,
-        dtype: torch.dtype = torch.float64,
+        dtype: torch.dtype = torch.float32,
     ):
         """
         Initialize the Starlet2D transform.
@@ -98,7 +98,7 @@ class Starlet2D(nn.Module):
             n_scales: Total number of scales (detail scales + 1 coarse scale).
                      For example, n_scales=5 gives 4 detail scales and 1 coarse scale.
             device: torch device for computation. If None, uses CPU.
-            dtype: Data type for computations. Default: torch.float64 to match NumPy.
+            dtype: Data type for computations. Default: torch.float32 (PyTorch standard).
         """
         super(Starlet2D, self).__init__()
 
