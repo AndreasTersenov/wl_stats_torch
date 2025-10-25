@@ -43,7 +43,8 @@ class WLStatistics:
         self,
         n_scales: int = 5,
         device: Optional[torch.device] = None,
-        pixel_arcmin: float = 1.0
+        pixel_arcmin: float = 1.0,
+        dtype: torch.dtype = torch.float64
     ):
         """
         Initialize weak lensing statistics calculator.
@@ -52,6 +53,7 @@ class WLStatistics:
             n_scales: Number of wavelet scales (including coarse)
             device: torch device for computation. If None, auto-detects.
             pixel_arcmin: Pixel resolution in arcminutes
+            dtype: Data type for computations. Default: torch.float64 to match NumPy.
         """
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -59,9 +61,10 @@ class WLStatistics:
         self.n_scales = n_scales
         self.device = device
         self.pixel_arcmin = pixel_arcmin
+        self.dtype = dtype
         
         # Initialize starlet transform
-        self.starlet = Starlet2D(n_scales=n_scales, device=device)
+        self.starlet = Starlet2D(n_scales=n_scales, device=device, dtype=dtype)
         
         # Storage for computed results
         self.wavelet_coeffs = None
@@ -100,9 +103,9 @@ class WLStatistics:
                 - 'noise_levels': Noise std for each coefficient (n_scales, H, W)
                 - 'snr': Signal-to-noise ratio (n_scales, H, W)
         """
-        # Ensure tensors are on correct device
-        image = image.to(self.device)
-        noise_sigma = noise_sigma.to(self.device)
+        # Ensure tensors are on correct device and dtype
+        image = image.to(self.device, dtype=self.dtype)
+        noise_sigma = noise_sigma.to(self.device, dtype=self.dtype)
         if mask is not None:
             mask = mask.to(self.device)
         
@@ -139,7 +142,8 @@ class WLStatistics:
         max_snr: float = 6.0,
         n_bins: int = 31,
         mask: Optional[torch.Tensor] = None,
-        verbose: bool = False
+        verbose: bool = False,
+        clamp_overflow: bool = False
     ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
         """
         Compute histogram of peak counts at all wavelet scales.
@@ -150,6 +154,9 @@ class WLStatistics:
             n_bins: Number of histogram bins
             mask: Optional mask to restrict peak detection
             verbose: Print min/max SNR at each scale
+            clamp_overflow: If True, peaks outside SNR range are included in edge bins.
+                          If False (default), peaks outside range are excluded.
+                          False matches cosmostat/pycs behavior.
         
         Returns:
             Tuple of (bin_centers, peak_counts_list) where:
@@ -185,7 +192,7 @@ class WLStatistics:
             )
             
             # Compute histogram
-            counts = peaks_to_histogram(heights, bins)
+            counts = peaks_to_histogram(heights, bins, clamp_overflow=clamp_overflow)
             
             peak_counts_list.append(counts)
             peak_positions_list.append(positions)
@@ -203,7 +210,8 @@ class WLStatistics:
         n_bins: int = 40,
         mask: Optional[torch.Tensor] = None,
         min_snr: Optional[float] = None,
-        max_snr: Optional[float] = None
+        max_snr: Optional[float] = None,
+        clamp_overflow: bool = False
     ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
         """
         Compute L1-norm as a function of SNR threshold for each scale.
@@ -216,6 +224,9 @@ class WLStatistics:
             mask: Optional mask to restrict calculation
             min_snr: Minimum SNR (if None, uses data minimum)
             max_snr: Maximum SNR (if None, uses data maximum)
+            clamp_overflow: If True, values outside SNR range are included in edge bins.
+                          If False (default), values outside range are excluded.
+                          False matches cosmostat/pycs behavior.
         
         Returns:
             Tuple of (bins_list, l1_norms_list) where:
@@ -250,14 +261,31 @@ class WLStatistics:
             
             # Digitize SNR values
             bin_indices = torch.searchsorted(thresholds, snr_masked, right=False)
-            bin_indices = torch.clamp(bin_indices, 1, n_bins)
             
-            # Compute L1-norm for each bin
-            l1_per_bin = torch.zeros(n_bins, device=self.device)
-            for bin_idx in range(1, n_bins + 1):
-                mask_bin = bin_indices == bin_idx
-                if mask_bin.any():
-                    l1_per_bin[bin_idx - 1] = torch.abs(snr_masked[mask_bin]).sum()
+            if clamp_overflow:
+                # Force overflow values into edge bins
+                bin_indices = torch.clamp(bin_indices, 1, n_bins)
+                
+                # Compute L1-norm for each bin
+                l1_per_bin = torch.zeros(n_bins, device=self.device)
+                for bin_idx in range(1, n_bins + 1):
+                    mask_bin = bin_indices == bin_idx
+                    if mask_bin.any():
+                        l1_per_bin[bin_idx - 1] = torch.abs(snr_masked[mask_bin]).sum()
+            else:
+                # Exclude overflow values (matches cosmostat behavior)
+                valid_mask = (bin_indices >= 1) & (bin_indices <= n_bins)
+                
+                # Compute L1-norm for each bin
+                l1_per_bin = torch.zeros(n_bins, device=self.device)
+                if valid_mask.any():
+                    bin_indices_valid = bin_indices[valid_mask]
+                    snr_valid = snr_masked[valid_mask]
+                    
+                    for bin_idx in range(1, n_bins + 1):
+                        mask_bin = bin_indices_valid == bin_idx
+                        if mask_bin.any():
+                            l1_per_bin[bin_idx - 1] = torch.abs(snr_valid[mask_bin]).sum()
             
             bins_list.append(bin_centers)
             l1_norms_list.append(l1_per_bin)
@@ -276,7 +304,8 @@ class WLStatistics:
         min_snr: float = -2.0,
         max_snr: float = 6.0,
         n_bins: int = 31,
-        mask: Optional[torch.Tensor] = None
+        mask: Optional[torch.Tensor] = None,
+        clamp_overflow: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Compute mono-scale peak counts with Gaussian smoothing.
@@ -289,6 +318,9 @@ class WLStatistics:
             max_snr: Maximum SNR for histogram
             n_bins: Number of histogram bins
             mask: Optional observation mask
+            clamp_overflow: If True, peaks outside SNR range are included in edge bins.
+                          If False (default), peaks outside range are excluded.
+                          False matches cosmostat/pycs behavior.
         
         Returns:
             Tuple of (bin_centers, peak_counts)
@@ -304,7 +336,8 @@ class WLStatistics:
             sigma_noise=noise_sigma,
             smoothing_sigma=smoothing_sigma,
             mask=mask,
-            bins=bins
+            bins=bins,
+            clamp_overflow=clamp_overflow
         )
         
         self.mono_peak_counts = counts
@@ -320,9 +353,12 @@ class WLStatistics:
         max_snr: float = 6.0,
         n_bins: int = 31,
         l1_nbins: int = 40,
+        l1_min_snr: Optional[float] = None,
+        l1_max_snr: Optional[float] = None,
         compute_mono: bool = True,
         mono_smoothing_sigma: float = 2.0,
-        verbose: bool = False
+        verbose: bool = False,
+        clamp_overflow: bool = False
     ) -> Dict[str, any]:
         """
         Compute all weak lensing statistics in one call.
@@ -331,13 +367,18 @@ class WLStatistics:
             image: Convergence map (H, W)
             noise_sigma: Noise std map (H, W) or scalar
             mask: Optional observation mask (H, W)
-            min_snr: Minimum SNR for histograms
-            max_snr: Maximum SNR for histograms
+            min_snr: Minimum SNR for peak count histograms
+            max_snr: Maximum SNR for peak count histograms
             n_bins: Number of bins for peak histograms
             l1_nbins: Number of bins for L1-norm
+            l1_min_snr: Minimum SNR for L1-norm (if None, uses min_snr)
+            l1_max_snr: Maximum SNR for L1-norm (if None, uses max_snr)
             compute_mono: Whether to compute mono-scale peaks
             mono_smoothing_sigma: Smoothing scale for mono-scale peaks
             verbose: Print progress information
+            clamp_overflow: If True, values outside SNR range are included in edge bins.
+                          If False (default), values outside range are excluded.
+                          False matches cosmostat/pycs behavior.
         
         Returns:
             Dictionary with all computed statistics
@@ -347,6 +388,10 @@ class WLStatistics:
         # Convert noise_sigma to tensor if scalar
         if isinstance(noise_sigma, (int, float)):
             noise_sigma = torch.full_like(image, noise_sigma)
+        
+        # Use peak SNR ranges for L1-norm if not separately specified
+        l1_min_snr_use = l1_min_snr if l1_min_snr is not None else min_snr
+        l1_max_snr_use = l1_max_snr if l1_max_snr is not None else max_snr
         
         # 1. Wavelet transform and SNR
         if verbose:
@@ -362,7 +407,8 @@ class WLStatistics:
             max_snr=max_snr,
             n_bins=n_bins,
             mask=mask,
-            verbose=verbose
+            verbose=verbose,
+            clamp_overflow=clamp_overflow
         )
         results['peak_bins'] = bin_centers
         results['wavelet_peak_counts'] = peak_counts
@@ -375,8 +421,9 @@ class WLStatistics:
         l1_bins, l1_norms = self.compute_wavelet_l1_norms(
             n_bins=l1_nbins,
             mask=mask,
-            min_snr=min_snr,
-            max_snr=max_snr
+            min_snr=l1_min_snr_use,
+            max_snr=l1_max_snr_use,
+            clamp_overflow=clamp_overflow
         )
         results['l1_bins'] = l1_bins
         results['wavelet_l1_norms'] = l1_norms
@@ -399,7 +446,8 @@ class WLStatistics:
                 min_snr=min_snr,
                 max_snr=max_snr,
                 n_bins=n_bins,
-                mask=mask
+                mask=mask,
+                clamp_overflow=clamp_overflow
             )
             results['mono_peak_bins'] = mono_bins
             results['mono_peak_counts'] = mono_counts

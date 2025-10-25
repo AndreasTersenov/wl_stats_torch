@@ -15,6 +15,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple
+import math
+import numpy as np
+from scipy import signal as scipy_signal
 
 
 class Starlet2D(nn.Module):
@@ -39,7 +42,7 @@ class Starlet2D(nn.Module):
         >>> coeffs = starlet(image)  # (batch, n_scales, H, W)
     """
     
-    def __init__(self, n_scales: int = 5, device: Optional[torch.device] = None):
+    def __init__(self, n_scales: int = 5, device: Optional[torch.device] = None, dtype: torch.dtype = torch.float64):
         """
         Initialize the Starlet2D transform.
         
@@ -47,6 +50,7 @@ class Starlet2D(nn.Module):
             n_scales: Total number of scales (detail scales + 1 coarse scale).
                      For example, n_scales=5 gives 4 detail scales and 1 coarse scale.
             device: torch device for computation. If None, uses CPU.
+            dtype: Data type for computations. Default: torch.float64 to match NumPy.
         """
         super(Starlet2D, self).__init__()
         
@@ -55,12 +59,13 @@ class Starlet2D(nn.Module):
         
         self.n_scales = n_scales
         self.device = device if device is not None else torch.device('cpu')
+        self.dtype = dtype
         
         # Define the 1D B3-spline kernel coefficients
         # These are the coefficients for the B3-spline: [1/16, 1/4, 3/8, 1/4, 1/16]
         kernel_1d = torch.tensor(
             [1.0/16.0, 1.0/4.0, 3.0/8.0, 1.0/4.0, 1.0/16.0],
-            dtype=torch.float32,
+            dtype=self.dtype,
             device=self.device
         )
         
@@ -93,7 +98,8 @@ class Starlet2D(nn.Module):
                 padding=padding,
                 dilation=dilation,
                 bias=False,
-                padding_mode='reflect'
+                padding_mode='reflect',
+                dtype=self.dtype  # Use the specified dtype
             )
             
             # Set the kernel weights and freeze them (non-trainable)
@@ -254,8 +260,8 @@ class Starlet2D(nn.Module):
         """
         Compute noise standard deviation for each wavelet coefficient.
         
-        This propagates a noise standard deviation map through the wavelet
-        transform to determine the expected noise level at each scale and position.
+        This uses the same approach as CosmoStat: compute the wavelet impulse response
+        (by transforming a delta function), square it, and convolve with the variance map.
         
         Args:
             noise_sigma: Noise std deviation map, shape (H, W) or (B, 1, H, W)
@@ -265,10 +271,13 @@ class Starlet2D(nn.Module):
             Noise levels for each coefficient, shape (B, n_scales, H, W)
         """
         # Handle input shapes
+        original_ndim = noise_sigma.ndim
         if noise_sigma.ndim == 2:
             noise_sigma = noise_sigma.unsqueeze(0).unsqueeze(0)
         elif noise_sigma.ndim == 3:
             noise_sigma = noise_sigma.unsqueeze(0)
+        
+        batch_size, _, height, width = noise_sigma.shape
         
         # If mask provided, set unobserved regions to maximum noise
         if mask is not None:
@@ -282,55 +291,51 @@ class Starlet2D(nn.Module):
             noise_sigma[mask == 0] = max_noise
         
         # Compute variance map
-        variance_map = noise_sigma ** 2
+        variance_map = noise_sigma ** 2  # (B, 1, H, W)
         
-        # Propagate variance through each scale
+        # Create impulse (delta function) at the center
+        impulse = torch.zeros(1, 1, height, width, device=self.device, dtype=self.dtype)
+        impulse[0, 0, height // 2, width // 2] = 1.0
+        
+        # Get the wavelet impulse response by transforming the delta function
+        impulse_coeffs = self.forward(impulse, return_coarse=True)  # (1, n_scales, H, W)
+        
+        # Square the impulse response coefficients
+        impulse_coeffs_squared = impulse_coeffs ** 2  # (1, n_scales, H, W)
+        
+        # For each scale, convolve the variance map with the squared impulse response
+        # Use scipy's fftconvolve to match CosmoStat exactly
         variance_coeffs = []
-        for scale_idx in range(self.n_scales - 1):
-            # The variance of a difference is the sum of variances
-            # For the starlet, each coefficient is formed by:
-            # detail = current - smoothed
-            # var(detail) = var(current) + var(smoothed)
+        
+        # Convert to numpy for scipy convolution
+        variance_map_np = variance_map[0, 0, :, :].cpu().numpy()
+        impulse_squared_np = impulse_coeffs_squared[0, :, :, :].cpu().numpy()
+        
+        for scale_idx in range(self.n_scales):
+            # Get the squared impulse response for this scale
+            kernel = impulse_squared_np[scale_idx, :, :]  # (H, W)
             
-            # Convolve variance with squared kernel
-            kernel_squared = self.kernel_2d ** 2
+            # Convolve using scipy's fftconvolve (mode='same')
+            var_scale_np = scipy_signal.fftconvolve(variance_map_np, kernel, mode='same')
             
-            # Use the same dilation as the forward transform
-            dilation = 2 ** scale_idx
-            padding = 2 * dilation
+            # Clamp to avoid negative values due to numerical errors
+            var_scale_np = np.maximum(var_scale_np, 0)
             
-            # Convolve variance map with squared kernel
-            if padding > 0:
-                variance_padded = F.pad(
-                    variance_map,
-                    (padding, padding, padding, padding),
-                    mode='reflect',
-                )
-            else:
-                variance_padded = variance_map
-
-            smoothed_var = F.conv2d(
-                variance_padded,
-                kernel_squared,
-                bias=None,
-                stride=1,
-                padding=0,
-                dilation=dilation,
+            # Convert back to torch
+            var_scale = torch.from_numpy(var_scale_np).to(
+                device=self.device, dtype=self.dtype
             )
             
-            # Variance of detail scale
-            var_detail = variance_map + smoothed_var
-            variance_coeffs.append(var_detail)
+            # Replicate for batch dimension
+            var_scale_batch = var_scale.unsqueeze(0).unsqueeze(0).repeat(batch_size, 1, 1, 1)
             
-            # Update variance_map for next scale
-            variance_map = smoothed_var
+            variance_coeffs.append(var_scale_batch)  # (B, 1, H, W)
         
-        # Coarse scale variance
-        variance_coeffs.append(variance_map)
-        
-        # Stack and take square root to get standard deviations
+        # Stack all scales: (B, n_scales, H, W)
         variance_all = torch.cat(variance_coeffs, dim=1)
-        noise_levels = torch.sqrt(torch.clamp(variance_all, min=0))
+        
+        # Take square root to get standard deviations
+        noise_levels = torch.sqrt(variance_all)
         
         return noise_levels
     
