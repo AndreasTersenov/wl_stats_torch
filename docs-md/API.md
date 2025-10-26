@@ -12,7 +12,8 @@ from wl_stats_torch import WLStatistics
 stats = WLStatistics(
     n_scales=5,              # Number of wavelet scales
     device=None,             # torch.device or None for auto-detect
-    pixel_arcmin=1.0         # Pixel resolution in arcminutes
+    pixel_arcmin=1.0,        # Pixel resolution in arcminutes
+    dtype=torch.float64      # Data type for computations (default: float64)
 )
 ```
 
@@ -31,9 +32,12 @@ results = stats.compute_all_statistics(
     max_snr=6.0,            # Maximum SNR for histograms
     n_bins=31,              # Number of bins for peak histograms
     l1_nbins=40,            # Number of bins for L1-norm
+    l1_min_snr=None,        # Minimum SNR for L1-norm (uses min_snr if None)
+    l1_max_snr=None,        # Maximum SNR for L1-norm (uses max_snr if None)
     compute_mono=True,       # Whether to compute mono-scale peaks
     mono_smoothing_sigma=2.0, # Smoothing for mono-scale
-    verbose=False            # Print progress
+    verbose=False,           # Print progress
+    clamp_overflow=False     # Include out-of-range values in edge bins
 )
 ```
 
@@ -72,7 +76,8 @@ bin_centers, peak_counts = stats.compute_wavelet_peak_counts(
     max_snr=6.0,
     n_bins=31,
     mask=None,
-    verbose=False
+    verbose=False,
+    clamp_overflow=False  # Include out-of-range peaks in edge bins
 )
 ```
 
@@ -85,7 +90,8 @@ bins_list, l1_norms_list = stats.compute_wavelet_l1_norms(
     n_bins=40,
     mask=None,
     min_snr=None,
-    max_snr=None
+    max_snr=None,
+    clamp_overflow=False  # Include out-of-range values in edge bins
 )
 ```
 
@@ -101,7 +107,8 @@ bin_centers, counts = stats.compute_mono_scale_peaks(
     min_snr=-2.0,
     max_snr=6.0,
     n_bins=31,
-    mask=None
+    mask=None,
+    clamp_overflow=False  # Include out-of-range peaks in edge bins
 )
 ```
 
@@ -114,7 +121,8 @@ from wl_stats_torch.starlet import Starlet2D
 
 starlet = Starlet2D(
     n_scales=5,     # Total number of scales (including coarse)
-    device=None     # torch.device or None
+    device=None,    # torch.device or None
+    dtype=torch.float32  # Data type for computations (default: float32)
 )
 ```
 
@@ -169,6 +177,18 @@ snr = starlet.get_snr(
 )
 ```
 
+##### `get_scale_resolution`
+
+Get the effective resolution (FWHM) of each wavelet scale in arcminutes.
+
+```python
+resolutions = starlet.get_scale_resolution(
+    pixel_size_arcmin=1.0  # Size of one pixel in arcminutes
+)
+```
+
+**Returns:** List of resolutions for each scale (including coarse)
+
 ## Peak Detection Functions
 
 ### find_peaks_2d
@@ -209,6 +229,44 @@ results = find_peaks_batch(
 
 **Returns:** List of (positions, heights) tuples
 
+### peaks_to_histogram
+
+Compute histogram of peak heights.
+
+```python
+from wl_stats_torch.peaks import peaks_to_histogram
+
+counts = peaks_to_histogram(
+    peak_heights,        # Tensor of peak values (N,)
+    bins,               # Bin edges (n_bins+1,)
+    digitize_mode=True, # Use np.digitize-like behavior (default)
+    clamp_overflow=False # Include out-of-range values in edge bins
+)
+```
+
+**Returns:** Histogram counts, shape (n_bins,)
+
+**Note:** When `clamp_overflow=False` (default), values outside the bin range are excluded, matching CosmoStat/pycs behavior. When `clamp_overflow=True`, out-of-range values are included in the edge bins.
+
+## Utility Functions
+
+### fft_convolve2d
+
+Perform 2D convolution using FFT (equivalent to scipy.signal.fftconvolve with mode='same').
+
+```python
+from wl_stats_torch.starlet import fft_convolve2d
+
+result = fft_convolve2d(
+    signal,  # Input signal (H, W)
+    kernel   # Convolution kernel (H, W)
+)
+```
+
+**Returns:** Convolved result, shape (H, W)
+
+**Note:** This function stays entirely in PyTorch, avoiding CPU transfers and numpy conversions. It matches scipy's behavior for 'same' mode convolution and is used internally by the Starlet transform.
+
 ### mono_scale_peaks_smoothed
 
 Compute mono-scale peaks with Gaussian smoothing.
@@ -216,6 +274,7 @@ Compute mono-scale peaks with Gaussian smoothing.
 ```python
 from wl_stats_torch.peaks import mono_scale_peaks_smoothed
 
+```python
 bin_centers, counts, (positions, heights) = mono_scale_peaks_smoothed(
     image,
     sigma_noise,
@@ -224,8 +283,10 @@ bin_centers, counts, (positions, heights) = mono_scale_peaks_smoothed(
     bins=None,
     min_snr=-2.0,
     max_snr=6.0,
-    n_bins=31
+    n_bins=31,
+    clamp_overflow=False  # Include out-of-range peaks in edge bins
 )
+```
 ```
 
 ## Visualization Functions
@@ -311,6 +372,30 @@ plot_snr_map(
 )
 ```
 
+### plot_comparison
+
+Compare the same statistic across multiple result sets.
+
+```python
+from wl_stats_torch.visualization import plot_comparison
+
+plot_comparison(
+    results_list,        # List of result dictionaries
+    labels,             # Labels for each result set
+    statistic='wavelet_peak_counts',  # Statistic to compare
+    scale_idx=0,        # Which scale to plot
+    title=None,
+    log_scale=True,
+    figsize=(10, 6),
+    save_path=None
+)
+```
+
+**Supported statistics:**
+- `'wavelet_peak_counts'`: Compare peak count histograms
+- `'wavelet_l1_norms'`: Compare L1-norm curves
+- `'mono_peak_counts'`: Compare mono-scale peak counts
+
 ## Data Types
 
 All functions accept and return PyTorch tensors. Common shapes:
@@ -320,6 +405,18 @@ All functions accept and return PyTorch tensors. Common shapes:
 - **Peak positions**: `(N, 2)` where N is number of peaks
 - **Peak heights**: `(N,)`
 - **Histograms**: `(n_bins,)`
+
+### Important Notes
+
+**`clamp_overflow` Parameter:**
+Many histogram and binning functions include a `clamp_overflow` parameter (default: `False`):
+- When `False`: Values outside the specified SNR range are excluded from histograms. This matches CosmoStat/pycs reference implementation behavior.
+- When `True`: Values below `min_snr` are included in the first bin, and values above `max_snr` are included in the last bin.
+
+**Data Type Defaults:**
+- `Starlet2D` uses `torch.float32` by default (optimized for GPU performance)
+- `WLStatistics` uses `torch.float64` by default (matches NumPy/CosmoStat precision)
+- Both can be overridden via the `dtype` parameter
 
 ## Device Handling
 
