@@ -21,13 +21,13 @@ stats = WLStatistics(
 
 ##### `compute_all_statistics`
 
-Compute all statistics in one call.
+Compute all statistics in one call. **Supports batch processing!**
 
 ```python
 results = stats.compute_all_statistics(
-    image,                    # Convergence map (H, W)
-    noise_sigma,             # Noise std map (H, W) or scalar
-    mask=None,               # Optional observation mask (H, W)
+    image,                    # Convergence map (H, W) or batch (B, H, W)
+    noise_sigma,             # Noise: scalar, (H, W), or (B, H, W)
+    mask=None,               # Optional mask: None, (H, W), or (B, H, W)
     min_snr=-2.0,           # Minimum SNR for histograms
     max_snr=6.0,            # Maximum SNR for histograms
     n_bins=31,              # Number of bins for peak histograms
@@ -41,59 +41,115 @@ results = stats.compute_all_statistics(
 )
 ```
 
-**Returns:** Dictionary with keys:
-- `wavelet_coeffs`: Wavelet coefficients (n_scales, H, W)
-- `noise_levels`: Noise std for each coefficient (n_scales, H, W)
-- `snr`: Signal-to-noise ratio (n_scales, H, W)
-- `peak_bins`: Bin centers for peak histograms
-- `wavelet_peak_counts`: List of peak count histograms per scale
+**Parameters:**
+- `image`: Input convergence map(s)
+  - Single: `(H, W)` 
+  - Batch: `(B, H, W)`
+- `noise_sigma`: Noise standard deviation
+  - Scalar: same for all pixels/images
+  - Map `(H, W)`: same pattern for all images in batch
+  - Batch map `(B, H, W)`: different per image
+- `mask`: Observation mask
+  - `None`: no masking
+  - Map `(H, W)`: same mask for all images in batch
+  - Batch map `(B, H, W)`: different per image
+
+**Returns:** Dictionary with keys (shapes depend on input):
+
+*Single image input (H, W):*
+- `wavelet_coeffs`: `(n_scales, H, W)`
+- `noise_levels`: `(n_scales, H, W)`
+- `snr`: `(n_scales, H, W)`
+- `peak_bins`: `(n_bins,)`
+- `wavelet_peak_counts`: List of `(n_bins,)` per scale
 - `wavelet_peak_positions`: List of peak positions per scale
 - `wavelet_peak_heights`: List of peak heights per scale
-- `l1_bins`: List of bin centers for L1-norms per scale
-- `wavelet_l1_norms`: List of L1-norms per scale
-- `mono_peak_bins`: Bin centers for mono-scale peaks
-- `mono_peak_counts`: Mono-scale peak counts
+- `l1_bins`: List of `(l1_nbins,)` per scale
+- `wavelet_l1_norms`: List of `(l1_nbins,)` per scale
+- `mono_peak_bins`: `(n_bins,)` (if `compute_mono=True`)
+- `mono_peak_counts`: `(n_bins,)` (if `compute_mono=True`)
+
+*Batch input (B, H, W):*
+- `wavelet_coeffs`: `(B, n_scales, H, W)`
+- `noise_levels`: `(B, n_scales, H, W)`
+- `snr`: `(B, n_scales, H, W)`
+- `peak_bins`: `(n_bins,)`
+- `wavelet_peak_counts`: List of `(B, n_bins)` per scale
+- `wavelet_peak_positions`: List of lists (per scale, per batch item)
+- `wavelet_peak_heights`: List of lists (per scale, per batch item)
+- `l1_bins`: List of `(l1_nbins,)` per scale
+- `wavelet_l1_norms`: List of `(B, l1_nbins)` per scale
+- `mono_peak_bins`: `(n_bins,)` (if `compute_mono=True`)
+- `mono_peak_counts`: `(B, n_bins)` (if `compute_mono=True`)
+
+**Example (Batch Processing):**
+```python
+# Process 128 convergence maps at once
+images = torch.randn(128, 256, 128, device='cuda')
+stats = WLStatistics(n_scales=6, device='cuda')
+results = stats.compute_all_statistics(images, noise_sigma=0.001)
+
+# Extract batched features for ML training
+wavelet_peaks = torch.stack(results['wavelet_peak_counts'])  # (6, 128, 31)
+features = wavelet_peaks.permute(1, 0, 2).flatten(1)  # (128, 186)
+```
 
 ##### `compute_wavelet_transform`
 
-Compute wavelet transform and SNR.
+Compute wavelet transform and SNR. **Supports batch processing!**
 
 ```python
 results = stats.compute_wavelet_transform(
-    image,           # Input map (H, W)
-    noise_sigma,    # Noise std map (H, W)
-    mask=None       # Optional mask (H, W)
+    image,           # Input map (H, W) or batch (B, H, W)
+    noise_sigma,    # Noise: scalar, (H, W), or (B, H, W)
+    mask=None       # Optional mask: None, (H, W), or (B, H, W)
 )
 ```
 
+**Returns:** Dictionary with:
+- Single input: `wavelet_coeffs`, `noise_levels`, `snr` as `(n_scales, H, W)`
+- Batch input: `wavelet_coeffs`, `noise_levels`, `snr` as `(B, n_scales, H, W)`
+
 ##### `compute_wavelet_peak_counts`
 
-Compute peak count histograms at all scales.
+Compute peak count histograms at all scales. **Supports batch processing!**
 
 ```python
 bin_centers, peak_counts = stats.compute_wavelet_peak_counts(
     min_snr=-2.0,
     max_snr=6.0,
     n_bins=31,
-    mask=None,
+    mask=None,            # None, (H, W), or (B, H, W)
     verbose=False,
     clamp_overflow=False  # Include out-of-range peaks in edge bins
 )
 ```
 
+**Returns:**
+- `bin_centers`: `(n_bins,)`
+- `peak_counts`: List of tensors per scale
+  - Single image: `(n_bins,)` per scale
+  - Batch: `(B, n_bins)` per scale
+
 ##### `compute_wavelet_l1_norms`
 
-Compute L1-norms as function of SNR.
+Compute L1-norms as function of SNR. **Supports batch processing!**
 
 ```python
 bins_list, l1_norms_list = stats.compute_wavelet_l1_norms(
     n_bins=40,
-    mask=None,
+    mask=None,            # None, (H, W), or (B, H, W)
     min_snr=None,
     max_snr=None,
     clamp_overflow=False  # Include out-of-range values in edge bins
 )
 ```
+
+**Returns:**
+- `bins_list`: List of `(n_bins,)` per scale
+- `l1_norms_list`: List of tensors per scale
+  - Single image: `(n_bins,)` per scale
+  - Batch: `(B, n_bins)` per scale
 
 ##### `compute_mono_scale_peaks`
 
