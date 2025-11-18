@@ -7,11 +7,11 @@ Main class for computing weak lensing summary statistics including:
 - Mono-scale peak counts with Gaussian smoothing
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 
-from .peaks import find_peaks_2d, mono_scale_peaks_smoothed, peaks_to_histogram
+from .peaks import find_peaks_2d, find_peaks_batch, mono_scale_peaks_smoothed, peaks_to_histogram
 from .starlet import Starlet2D
 
 
@@ -79,44 +79,161 @@ class WLStatistics:
         """Get effective resolution of each scale in arcminutes."""
         return self.starlet.get_scale_resolution(self.pixel_arcmin)
 
-    def compute_wavelet_transform(
-        self, image: torch.Tensor, noise_sigma: torch.Tensor, mask: Optional[torch.Tensor] = None
-    ) -> Dict[str, torch.Tensor]:
+    def _is_batched(self, image: torch.Tensor) -> bool:
+        """Check if input is batched (B, H, W) vs single (H, W)."""
+        return image.ndim == 3
+
+    def _broadcast_noise_sigma(
+        self, noise_sigma: Union[float, torch.Tensor], image: torch.Tensor, is_batched: bool
+    ) -> torch.Tensor:
         """
-        Compute wavelet transform and SNR for an image.
+        Broadcast noise_sigma to match image shape.
 
         Args:
-            image: Input convergence map, shape (H, W)
-            noise_sigma: Noise standard deviation map, shape (H, W)
-            mask: Optional observation mask, shape (H, W)
+            noise_sigma: Scalar, (H, W), or (B, H, W)
+            image: Input image (H, W) or (B, H, W)
+            is_batched: Whether image is batched
+
+        Returns:
+            Broadcasted noise_sigma matching image shape
+        """
+        if isinstance(noise_sigma, (int, float)):
+            # Scalar: broadcast to full image shape
+            return torch.full_like(image, noise_sigma, dtype=self.dtype, device=self.device)
+
+        noise_sigma = noise_sigma.to(self.device, dtype=self.dtype)
+
+        if is_batched:
+            # Image is (B, H, W)
+            if noise_sigma.ndim == 2:
+                # noise_sigma is (H, W): broadcast to all batch items
+                return noise_sigma.unsqueeze(0).expand(image.shape[0], -1, -1)
+            elif noise_sigma.ndim == 3:
+                # noise_sigma is (B, H, W): already correct shape
+                if noise_sigma.shape[0] != image.shape[0]:
+                    raise ValueError(
+                        f"Batch size mismatch: image has {image.shape[0]} samples, "
+                        f"noise_sigma has {noise_sigma.shape[0]}"
+                    )
+                return noise_sigma
+            else:
+                raise ValueError(f"Invalid noise_sigma shape: {noise_sigma.shape}")
+        else:
+            # Image is (H, W)
+            if noise_sigma.ndim == 2:
+                # noise_sigma is (H, W): already correct shape
+                return noise_sigma
+            elif noise_sigma.ndim == 3:
+                raise ValueError(
+                    "noise_sigma has batch dimension (B, H, W) but image is single (H, W)"
+                )
+            else:
+                raise ValueError(f"Invalid noise_sigma shape: {noise_sigma.shape}")
+
+    def _broadcast_mask(
+        self, mask: Optional[torch.Tensor], image: torch.Tensor, is_batched: bool
+    ) -> Optional[torch.Tensor]:
+        """
+        Broadcast mask to match image shape.
+
+        Args:
+            mask: None, (H, W), or (B, H, W)
+            image: Input image (H, W) or (B, H, W)
+            is_batched: Whether image is batched
+
+        Returns:
+            Broadcasted mask matching image shape, or None
+        """
+        if mask is None:
+            return None
+
+        mask = mask.to(self.device)
+
+        if is_batched:
+            # Image is (B, H, W)
+            if mask.ndim == 2:
+                # mask is (H, W): broadcast to all batch items
+                return mask.unsqueeze(0).expand(image.shape[0], -1, -1)
+            elif mask.ndim == 3:
+                # mask is (B, H, W): already correct shape
+                if mask.shape[0] != image.shape[0]:
+                    raise ValueError(
+                        f"Batch size mismatch: image has {image.shape[0]} samples, "
+                        f"mask has {mask.shape[0]}"
+                    )
+                return mask
+            else:
+                raise ValueError(f"Invalid mask shape: {mask.shape}")
+        else:
+            # Image is (H, W)
+            if mask.ndim == 2:
+                # mask is (H, W): already correct shape
+                return mask
+            elif mask.ndim == 3:
+                raise ValueError("mask has batch dimension (B, H, W) but image is single (H, W)")
+            else:
+                raise ValueError(f"Invalid mask shape: {mask.shape}")
+
+    def compute_wavelet_transform(
+        self,
+        image: torch.Tensor,
+        noise_sigma: Union[float, torch.Tensor],
+        mask: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Compute wavelet transform and SNR for an image or batch of images.
+
+        Args:
+            image: Input convergence map(s), shape (H, W) or (B, H, W)
+            noise_sigma: Noise standard deviation, scalar, (H, W), or (B, H, W)
+            mask: Optional observation mask, None, (H, W), or (B, H, W)
 
         Returns:
             Dictionary with keys:
-                - 'wavelet_coeffs': Wavelet coefficients (n_scales, H, W)
-                - 'noise_levels': Noise std for each coefficient (n_scales, H, W)
-                - 'snr': Signal-to-noise ratio (n_scales, H, W)
+                - 'wavelet_coeffs': Wavelet coefficients (n_scales, H, W) or (B, n_scales, H, W)
+                - 'noise_levels': Noise std for each coefficient (n_scales, H, W) or (B, n_scales, H, W)
+                - 'snr': Signal-to-noise ratio (n_scales, H, W) or (B, n_scales, H, W)
         """
-        # Ensure tensors are on correct device and dtype
+        # Ensure image is on correct device and dtype
         image = image.to(self.device, dtype=self.dtype)
-        noise_sigma = noise_sigma.to(self.device, dtype=self.dtype)
-        if mask is not None:
-            mask = mask.to(self.device)
+
+        # Check if input is batched
+        is_batched = self._is_batched(image)
+
+        # Broadcast noise_sigma and mask to match image shape
+        noise_sigma = self._broadcast_noise_sigma(noise_sigma, image, is_batched)
+        mask = self._broadcast_mask(mask, image, is_batched)
+
+        # Prepare for Starlet transform (needs (B, 1, H, W))
+        if is_batched:
+            # (B, H, W) -> (B, 1, H, W)
+            image_4d = image.unsqueeze(1)
+            noise_sigma_4d = noise_sigma.unsqueeze(1)
+            mask_4d = mask.unsqueeze(1) if mask is not None else None
+        else:
+            # (H, W) -> (1, 1, H, W)
+            image_4d = image.unsqueeze(0).unsqueeze(0)
+            noise_sigma_4d = noise_sigma.unsqueeze(0).unsqueeze(0)
+            mask_4d = mask.unsqueeze(0).unsqueeze(0) if mask is not None else None
 
         # Compute wavelet transform
-        if image.ndim == 2:
-            image = image.unsqueeze(0).unsqueeze(0)
-
-        wavelet_coeffs = self.starlet(image, return_coarse=True)
-        wavelet_coeffs = wavelet_coeffs.squeeze(0)  # (n_scales, H, W)
+        wavelet_coeffs = self.starlet(image_4d, return_coarse=True)  # (B, n_scales, H, W)
 
         # Compute noise levels
-        noise_levels = self.starlet.get_noise_levels(noise_sigma, mask=mask)
-        noise_levels = noise_levels.squeeze(0)  # (n_scales, H, W)
+        noise_levels = self.starlet.get_noise_levels(
+            noise_sigma_4d, mask=mask_4d
+        )  # (B, n_scales, H, W)
 
         # Compute SNR
         snr = torch.zeros_like(wavelet_coeffs)
         valid_mask = noise_levels != 0
         snr[valid_mask] = wavelet_coeffs[valid_mask] / noise_levels[valid_mask]
+
+        # Remove batch dimension for single image case
+        if not is_batched:
+            wavelet_coeffs = wavelet_coeffs.squeeze(0)  # (n_scales, H, W)
+            noise_levels = noise_levels.squeeze(0)  # (n_scales, H, W)
+            snr = snr.squeeze(0)  # (n_scales, H, W)
 
         # Store results
         self.wavelet_coeffs = wavelet_coeffs
@@ -141,7 +258,7 @@ class WLStatistics:
             min_snr: Minimum SNR for histogram bins
             max_snr: Maximum SNR for histogram bins
             n_bins: Number of histogram bins
-            mask: Optional mask to restrict peak detection
+            mask: Optional mask to restrict peak detection (H, W) or (B, H, W)
             verbose: Print min/max SNR at each scale
             clamp_overflow: If True, peaks outside SNR range are included in edge bins.
                           If False (default), peaks outside range are excluded.
@@ -150,10 +267,13 @@ class WLStatistics:
         Returns:
             Tuple of (bin_centers, peak_counts_list) where:
                 - bin_centers: Tensor of shape (n_bins,)
-                - peak_counts_list: List of tensors, one per scale
+                - peak_counts_list: List of tensors per scale, shape (n_bins,) or (B, n_bins)
         """
         if self.snr_coeffs is None:
             raise RuntimeError("Must call compute_wavelet_transform first")
+
+        # Check if we're processing a batch
+        is_batched = self.snr_coeffs.ndim == 4
 
         # Create bins
         bins = torch.linspace(min_snr, max_snr, n_bins + 1, device=self.device)
@@ -164,26 +284,120 @@ class WLStatistics:
         peak_heights_list = []
 
         for scale_idx in range(self.n_scales):
-            snr_scale = self.snr_coeffs[scale_idx]
+            if is_batched:
+                # Batched processing: snr_scale is (B, H, W)
+                snr_scale = self.snr_coeffs[:, scale_idx, :, :]
+                batch_size = snr_scale.shape[0]
 
-            if verbose:
-                print(
-                    f"Scale {scale_idx + 1}: "
-                    f"Min SNR = {snr_scale.min():.4f}, "
-                    f"Max SNR = {snr_scale.max():.4f}"
+                if verbose:
+                    print(
+                        f"Scale {scale_idx + 1}: "
+                        f"Min SNR = {snr_scale.min():.4f}, "
+                        f"Max SNR = {snr_scale.max():.4f}"
+                    )
+
+                # Find peaks for all images in batch
+                # snr_scale needs to be (B, 1, H, W) for find_peaks_batch
+                snr_batch_4d = snr_scale.unsqueeze(1)
+
+                # Prepare mask for find_peaks_batch
+                if mask is not None:
+                    if mask.ndim == 2:
+                        # Shared mask (H, W): broadcast to batch and add channel dim
+                        mask_batch_4d = mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, -1, -1)
+                    else:
+                        # Per-sample mask (B, H, W): add channel dim
+                        mask_batch_4d = mask.unsqueeze(1)
+                else:
+                    mask_batch_4d = None
+
+                batch_results = find_peaks_batch(
+                    snr_batch_4d,
+                    threshold=None,
+                    masks=mask_batch_4d,
+                    include_border=False,
+                    ordered=True,
                 )
 
-            # Find peaks
-            positions, heights = find_peaks_2d(
-                snr_scale, threshold=None, mask=mask, include_border=False, ordered=True
-            )
+                # Vectorized histogram computation for all images in batch
+                # Process all peak heights at once with batch indices
+                batch_positions = []
+                batch_heights = []
 
-            # Compute histogram
-            counts = peaks_to_histogram(heights, bins, clamp_overflow=clamp_overflow)
+                # Collect all heights with batch indices for vectorized histogramming
+                all_heights = []
+                batch_indices = []
 
-            peak_counts_list.append(counts)
-            peak_positions_list.append(positions)
-            peak_heights_list.append(heights)
+                for i, (positions, heights) in enumerate(batch_results):
+                    batch_positions.append(positions)
+                    batch_heights.append(heights)
+                    if heights.numel() > 0:
+                        all_heights.append(heights)
+                        batch_indices.append(
+                            torch.full((len(heights),), i, dtype=torch.long, device=self.device)
+                        )
+
+                # Vectorized histogram computation
+                if len(all_heights) > 0:
+                    # Concatenate all heights and batch indices
+                    all_heights_cat = torch.cat(all_heights)
+                    batch_indices_cat = torch.cat(batch_indices)
+
+                    # Bin all heights at once using searchsorted
+                    bin_indices = torch.searchsorted(bins, all_heights_cat, right=True)
+
+                    # Handle rightmost edge
+                    rightmost_mask = all_heights_cat == bins[-1]
+                    if rightmost_mask.any():
+                        bin_indices[rightmost_mask] = n_bins
+
+                    if clamp_overflow:
+                        # Clip to valid range
+                        bin_indices = torch.clamp(bin_indices, 1, n_bins)
+                        valid_mask = torch.ones_like(bin_indices, dtype=torch.bool)
+                    else:
+                        # Only count values within valid range
+                        valid_mask = (bin_indices >= 1) & (bin_indices <= n_bins)
+
+                    # Filter to valid bins
+                    valid_bin_indices = bin_indices[valid_mask] - 1  # Shift to 0-indexed
+                    valid_batch_indices = batch_indices_cat[valid_mask]
+
+                    # Create 2D histogram using bincount with offsets
+                    # Each (batch_idx, bin_idx) pair maps to a unique linear index
+                    linear_indices = valid_batch_indices * n_bins + valid_bin_indices
+                    flat_counts = torch.bincount(linear_indices, minlength=batch_size * n_bins)
+                    batch_counts = flat_counts.reshape(batch_size, n_bins).float()
+                else:
+                    # No peaks found in any image
+                    batch_counts = torch.zeros(batch_size, n_bins, device=self.device)
+
+                peak_counts_list.append(batch_counts)
+                peak_positions_list.append(batch_positions)
+                peak_heights_list.append(batch_heights)
+
+            else:
+                # Single image processing: snr_scale is (H, W)
+                snr_scale = self.snr_coeffs[scale_idx]
+
+                if verbose:
+                    print(
+                        f"Scale {scale_idx + 1}: "
+                        f"Min SNR = {snr_scale.min():.4f}, "
+                        f"Max SNR = {snr_scale.max():.4f}"
+                    )
+
+                # Find peaks
+                positions, heights = find_peaks_2d(
+                    snr_scale, threshold=None, mask=mask, include_border=False, ordered=True
+                )
+
+                # Compute histogram
+                counts = peaks_to_histogram(heights, bins, clamp_overflow=clamp_overflow)
+
+                peak_counts_list.append(counts)
+                peak_positions_list.append(positions)
+                peak_heights_list.append(heights)
 
         # Store results
         self.wavelet_peak_counts = peak_counts_list
@@ -208,7 +422,7 @@ class WLStatistics:
 
         Args:
             n_bins: Number of bins for SNR binning
-            mask: Optional mask to restrict calculation
+            mask: Optional mask to restrict calculation (H, W) or (B, H, W)
             min_snr: Minimum SNR (if None, uses data minimum)
             max_snr: Maximum SNR (if None, uses data maximum)
             clamp_overflow: If True, values outside SNR range are included in edge bins.
@@ -217,63 +431,155 @@ class WLStatistics:
 
         Returns:
             Tuple of (bins_list, l1_norms_list) where:
-                - bins_list: List of bin center tensors, one per scale
-                - l1_norms_list: List of L1-norm tensors, one per scale
+                - bins_list: List of bin center tensors per scale
+                - l1_norms_list: List of L1-norm tensors per scale, shape (n_bins,) or (B, n_bins)
         """
         if self.snr_coeffs is None:
             raise RuntimeError("Must call compute_wavelet_transform first")
+
+        # Check if we're processing a batch
+        is_batched = self.snr_coeffs.ndim == 4
 
         bins_list = []
         l1_norms_list = []
 
         for scale_idx in range(self.n_scales):
-            snr_scale = self.snr_coeffs[scale_idx]
+            if is_batched:
+                # Batched processing: snr_scale is (B, H, W)
+                snr_scale = self.snr_coeffs[:, scale_idx, :, :]
+                batch_size = snr_scale.shape[0]
 
-            # Apply mask if provided
-            if mask is not None:
-                mask_2d = mask.to(self.device)
-                snr_masked = snr_scale[mask_2d != 0]
+                # Determine SNR range across entire batch
+                if mask is not None:
+                    # Apply mask to get valid values
+                    if mask.ndim == 2:
+                        # Shared mask: broadcast to batch
+                        mask_expanded = mask.unsqueeze(0).expand(batch_size, -1, -1)
+                    else:
+                        mask_expanded = mask
+
+                    # Collect all valid SNR values across batch
+                    snr_all_valid = []
+                    for b in range(batch_size):
+                        snr_all_valid.append(snr_scale[b][mask_expanded[b] != 0])
+                    snr_all_valid = torch.cat(snr_all_valid)
+                else:
+                    snr_all_valid = snr_scale.flatten()
+
+                current_min = min_snr if min_snr is not None else snr_all_valid.min().item()
+                current_max = max_snr if max_snr is not None else snr_all_valid.max().item()
+
+                # Create bins (shared across batch)
+                thresholds = torch.linspace(
+                    current_min, current_max, n_bins + 1, device=self.device
+                )
+                bin_centers = 0.5 * (thresholds[:-1] + thresholds[1:])
+
+                # Vectorized processing for all images in batch
+                # Collect all SNR values with batch indices
+                all_snr_values = []
+                batch_indices = []
+
+                for b in range(batch_size):
+                    snr_img = snr_scale[b]
+
+                    # Apply mask if provided
+                    if mask is not None:
+                        if mask.ndim == 2:
+                            mask_img = mask
+                        else:
+                            mask_img = mask[b]
+                        snr_masked = snr_img[mask_img != 0]
+                    else:
+                        snr_masked = snr_img.flatten()
+
+                    if snr_masked.numel() > 0:
+                        all_snr_values.append(snr_masked)
+                        batch_indices.append(
+                            torch.full((len(snr_masked),), b, dtype=torch.long, device=self.device)
+                        )
+
+                # Vectorized L1-norm computation
+                if len(all_snr_values) > 0:
+                    # Concatenate all SNR values and batch indices
+                    all_snr_cat = torch.cat(all_snr_values)
+                    batch_indices_cat = torch.cat(batch_indices)
+
+                    # Digitize all SNR values at once
+                    bin_indices = torch.searchsorted(thresholds, all_snr_cat, right=False)
+
+                    if clamp_overflow:
+                        # Clip to valid range [1, n_bins]
+                        bin_indices = torch.clamp(bin_indices, 1, n_bins)
+                        valid_mask = torch.ones_like(bin_indices, dtype=torch.bool)
+                    else:
+                        # Only count values within valid range
+                        valid_mask = (bin_indices >= 1) & (bin_indices <= n_bins)
+
+                    # Filter to valid bins
+                    valid_bin_indices = bin_indices[valid_mask] - 1  # Shift to 0-indexed
+                    valid_batch_indices = batch_indices_cat[valid_mask]
+                    valid_snr_values = all_snr_cat[valid_mask]
+
+                    # Compute L1 norms: sum of absolute values per (batch, bin) pair
+                    # Use scatter_add to accumulate sums efficiently
+                    linear_indices = valid_batch_indices * n_bins + valid_bin_indices
+                    l1_batch_flat = torch.zeros(
+                        batch_size * n_bins, dtype=valid_snr_values.dtype, device=self.device
+                    )
+                    l1_batch_flat.scatter_add_(0, linear_indices, torch.abs(valid_snr_values))
+                    l1_batch = l1_batch_flat.reshape(batch_size, n_bins)
+                else:
+                    # No valid SNR values
+                    l1_batch = torch.zeros(batch_size, n_bins, device=self.device)
+
+                bins_list.append(bin_centers)
+                l1_norms_list.append(l1_batch)
+
             else:
-                snr_masked = snr_scale.flatten()
+                # Single image processing: snr_scale is (H, W)
+                snr_scale = self.snr_coeffs[scale_idx]
 
-            # Determine SNR range
-            current_min = min_snr if min_snr is not None else snr_masked.min().item()
-            current_max = max_snr if max_snr is not None else snr_masked.max().item()
+                # Apply mask if provided
+                if mask is not None:
+                    mask_2d = mask.to(self.device)
+                    snr_masked = snr_scale[mask_2d != 0]
+                else:
+                    snr_masked = snr_scale.flatten()
 
-            # Create bins
-            thresholds = torch.linspace(current_min, current_max, n_bins + 1, device=self.device)
-            bin_centers = 0.5 * (thresholds[:-1] + thresholds[1:])
+                # Determine SNR range
+                current_min = min_snr if min_snr is not None else snr_masked.min().item()
+                current_max = max_snr if max_snr is not None else snr_masked.max().item()
 
-            # Digitize SNR values
-            bin_indices = torch.searchsorted(thresholds, snr_masked, right=False)
+                # Create bins
+                thresholds = torch.linspace(
+                    current_min, current_max, n_bins + 1, device=self.device
+                )
+                bin_centers = 0.5 * (thresholds[:-1] + thresholds[1:])
 
-            if clamp_overflow:
-                # Force overflow values into edge bins
-                bin_indices = torch.clamp(bin_indices, 1, n_bins)
+                # Digitize SNR values
+                bin_indices = torch.searchsorted(thresholds, snr_masked, right=False)
 
-                # Compute L1-norm for each bin
-                l1_per_bin = torch.zeros(n_bins, device=self.device)
-                for bin_idx in range(1, n_bins + 1):
-                    mask_bin = bin_indices == bin_idx
-                    if mask_bin.any():
-                        l1_per_bin[bin_idx - 1] = torch.abs(snr_masked[mask_bin]).sum()
-            else:
-                # Exclude overflow values (matches cosmostat behavior)
-                valid_mask = (bin_indices >= 1) & (bin_indices <= n_bins)
-
-                # Compute L1-norm for each bin
-                l1_per_bin = torch.zeros(n_bins, device=self.device)
-                if valid_mask.any():
-                    bin_indices_valid = bin_indices[valid_mask]
-                    snr_valid = snr_masked[valid_mask]
-
+                if clamp_overflow:
+                    bin_indices = torch.clamp(bin_indices, 1, n_bins)
+                    l1_per_bin = torch.zeros(n_bins, device=self.device)
                     for bin_idx in range(1, n_bins + 1):
-                        mask_bin = bin_indices_valid == bin_idx
+                        mask_bin = bin_indices == bin_idx
                         if mask_bin.any():
-                            l1_per_bin[bin_idx - 1] = torch.abs(snr_valid[mask_bin]).sum()
+                            l1_per_bin[bin_idx - 1] = torch.abs(snr_masked[mask_bin]).sum()
+                else:
+                    valid_mask = (bin_indices >= 1) & (bin_indices <= n_bins)
+                    l1_per_bin = torch.zeros(n_bins, device=self.device)
+                    if valid_mask.any():
+                        bin_indices_valid = bin_indices[valid_mask]
+                        snr_valid = snr_masked[valid_mask]
+                        for bin_idx in range(1, n_bins + 1):
+                            mask_bin = bin_indices_valid == bin_idx
+                            if mask_bin.any():
+                                l1_per_bin[bin_idx - 1] = torch.abs(snr_valid[mask_bin]).sum()
 
-            bins_list.append(bin_centers)
-            l1_norms_list.append(l1_per_bin)
+                bins_list.append(bin_centers)
+                l1_norms_list.append(l1_per_bin)
 
         # Store results
         self.l1_bins = bins_list
@@ -284,7 +590,7 @@ class WLStatistics:
     def compute_mono_scale_peaks(
         self,
         image: torch.Tensor,
-        noise_sigma: float,
+        noise_sigma: Union[float, torch.Tensor],
         smoothing_sigma: float = 2.0,
         min_snr: float = -2.0,
         max_snr: float = 6.0,
@@ -296,43 +602,115 @@ class WLStatistics:
         Compute mono-scale peak counts with Gaussian smoothing.
 
         Args:
-            image: Input convergence map (H, W)
-            noise_sigma: Standard deviation of noise (scalar)
+            image: Input convergence map (H, W) or (B, H, W)
+            noise_sigma: Standard deviation of noise, scalar or tensor
             smoothing_sigma: Gaussian smoothing scale in pixels
             min_snr: Minimum SNR for histogram
             max_snr: Maximum SNR for histogram
             n_bins: Number of histogram bins
-            mask: Optional observation mask
+            mask: Optional observation mask (H, W) or (B, H, W)
             clamp_overflow: If True, peaks outside SNR range are included in edge bins.
                           If False (default), peaks outside range are excluded.
                           False matches cosmostat/pycs behavior.
 
         Returns:
             Tuple of (bin_centers, peak_counts)
+                - peak_counts shape: (n_bins,) or (B, n_bins)
         """
-        image = image.to(self.device)
-        if mask is not None:
-            mask = mask.to(self.device)
+        image = image.to(self.device, dtype=self.dtype)
+        is_batched = self._is_batched(image)
 
         bins = torch.linspace(min_snr, max_snr, n_bins + 1, device=self.device)
 
-        bin_centers, counts, (positions, heights) = mono_scale_peaks_smoothed(
-            image,
-            sigma_noise=noise_sigma,
-            smoothing_sigma=smoothing_sigma,
-            mask=mask,
-            bins=bins,
-            clamp_overflow=clamp_overflow,
-        )
+        if is_batched:
+            # Process batch of images
+            batch_size = image.shape[0]
+            batch_counts = torch.zeros(batch_size, n_bins, device=self.device)
 
-        self.mono_peak_counts = counts
+            # Determine mean noise if noise_sigma is a map
+            if isinstance(noise_sigma, torch.Tensor) and noise_sigma.numel() > 1:
+                noise_sigma = noise_sigma.to(self.device, dtype=self.dtype)
+                if noise_sigma.ndim == 2:
+                    # Shared noise map: use mean
+                    if mask is not None and mask.ndim == 2:
+                        mean_noise = noise_sigma[mask != 0].mean().item()
+                    else:
+                        mean_noise = noise_sigma.mean().item()
+                    noise_sigma_scalar = mean_noise
+                elif noise_sigma.ndim == 3:
+                    # Per-sample noise: will handle per-sample below
+                    noise_sigma_scalar = None
+                else:
+                    noise_sigma_scalar = noise_sigma.item()
+            else:
+                noise_sigma_scalar = (
+                    float(noise_sigma)
+                    if isinstance(noise_sigma, (int, float))
+                    else noise_sigma.item()
+                )
 
-        return bin_centers, counts
+            for b in range(batch_size):
+                img_b = image[b]
+                mask_b = mask[b] if (mask is not None and mask.ndim == 3) else mask
+
+                # Get noise for this sample
+                if noise_sigma_scalar is None:
+                    # Per-sample noise map
+                    noise_b = noise_sigma[b]
+                    if mask_b is not None:
+                        noise_scalar_b = noise_b[mask_b != 0].mean().item()
+                    else:
+                        noise_scalar_b = noise_b.mean().item()
+                else:
+                    noise_scalar_b = noise_sigma_scalar
+
+                bin_centers, counts, (positions, heights) = mono_scale_peaks_smoothed(
+                    img_b,
+                    sigma_noise=noise_scalar_b,
+                    smoothing_sigma=smoothing_sigma,
+                    mask=mask_b,
+                    bins=bins,
+                    clamp_overflow=clamp_overflow,
+                )
+                batch_counts[b] = counts
+
+            self.mono_peak_counts = batch_counts
+            return bin_centers, batch_counts
+
+        else:
+            # Single image processing
+            if mask is not None:
+                mask = mask.to(self.device)
+
+            # Convert noise_sigma to scalar if it's a map
+            if isinstance(noise_sigma, torch.Tensor) and noise_sigma.numel() > 1:
+                noise_sigma = noise_sigma.to(self.device, dtype=self.dtype)
+                if mask is not None:
+                    mean_noise = noise_sigma[mask != 0].mean().item()
+                else:
+                    mean_noise = noise_sigma.mean().item()
+                noise_sigma_scalar = mean_noise
+            elif isinstance(noise_sigma, torch.Tensor):
+                noise_sigma_scalar = noise_sigma.item()
+            else:
+                noise_sigma_scalar = float(noise_sigma)
+
+            bin_centers, counts, (positions, heights) = mono_scale_peaks_smoothed(
+                image,
+                sigma_noise=noise_sigma_scalar,
+                smoothing_sigma=smoothing_sigma,
+                mask=mask,
+                bins=bins,
+                clamp_overflow=clamp_overflow,
+            )
+
+            self.mono_peak_counts = counts
+            return bin_centers, counts
 
     def compute_all_statistics(
         self,
         image: torch.Tensor,
-        noise_sigma: torch.Tensor,
+        noise_sigma: Union[float, torch.Tensor],
         mask: Optional[torch.Tensor] = None,
         min_snr: float = -2.0,
         max_snr: float = 6.0,
@@ -348,10 +726,12 @@ class WLStatistics:
         """
         Compute all weak lensing statistics in one call.
 
+        Supports both single images (H, W) and batches (B, H, W).
+
         Args:
-            image: Convergence map (H, W)
-            noise_sigma: Noise std map (H, W) or scalar
-            mask: Optional observation mask (H, W)
+            image: Convergence map (H, W) or batch (B, H, W)
+            noise_sigma: Noise std, scalar, (H, W), or (B, H, W)
+            mask: Optional observation mask, None, (H, W), or (B, H, W)
             min_snr: Minimum SNR for peak count histograms
             max_snr: Maximum SNR for peak count histograms
             n_bins: Number of bins for peak histograms
@@ -366,13 +746,19 @@ class WLStatistics:
                           False matches cosmostat/pycs behavior.
 
         Returns:
-            Dictionary with all computed statistics
+            Dictionary with all computed statistics.
+            For batched input (B, H, W):
+                - 'wavelet_coeffs': (B, n_scales, H, W)
+                - 'wavelet_peak_counts': list of (B, n_bins) per scale
+                - 'wavelet_l1_norms': list of (B, l1_nbins) per scale
+                - 'mono_peak_counts': (B, n_bins) if compute_mono=True
+            For single input (H, W):
+                - 'wavelet_coeffs': (n_scales, H, W)
+                - 'wavelet_peak_counts': list of (n_bins,) per scale
+                - 'wavelet_l1_norms': list of (l1_nbins,) per scale
+                - 'mono_peak_counts': (n_bins,) if compute_mono=True
         """
         results = {}
-
-        # Convert noise_sigma to tensor if scalar
-        if isinstance(noise_sigma, (int, float)):
-            noise_sigma = torch.full_like(image, noise_sigma)
 
         # Use peak SNR ranges for L1-norm if not separately specified
         l1_min_snr_use = l1_min_snr if l1_min_snr is not None else min_snr
@@ -380,7 +766,9 @@ class WLStatistics:
 
         # 1. Wavelet transform and SNR
         if verbose:
-            print("Computing wavelet transform...")
+            is_batched = self._is_batched(image)
+            batch_info = f" (batch size {image.shape[0]})" if is_batched else ""
+            print(f"Computing wavelet transform{batch_info}...")
         wt_results = self.compute_wavelet_transform(image, noise_sigma, mask)
         results.update(wt_results)
 
@@ -418,19 +806,9 @@ class WLStatistics:
             if verbose:
                 print("Computing mono-scale peaks...")
 
-            # Use mean noise if noise_sigma is a map
-            if noise_sigma.numel() > 1:
-                mean_noise = (
-                    noise_sigma[mask != 0].mean().item()
-                    if mask is not None
-                    else noise_sigma.mean().item()
-                )
-            else:
-                mean_noise = noise_sigma.item()
-
             mono_bins, mono_counts = self.compute_mono_scale_peaks(
                 image,
-                noise_sigma=mean_noise,
+                noise_sigma=noise_sigma,
                 smoothing_sigma=mono_smoothing_sigma,
                 min_snr=min_snr,
                 max_snr=max_snr,
