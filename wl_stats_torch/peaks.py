@@ -155,7 +155,7 @@ def find_peaks_batch(
     """
     if images.ndim == 3:
         images = images.unsqueeze(1)  # Add channel dimension: (B, 1, H, W)
-    
+
     if images.ndim != 4 or images.shape[1] != 1:
         raise ValueError(f"Expected images of shape (B, 1, H, W), got {images.shape}")
 
@@ -217,24 +217,24 @@ def find_peaks_batch(
     for b in range(B):
         # Get peak mask for this image: (H, W)
         peak_mask = is_peak[b]
-        
+
         # Get peak positions: (N, 2)
         peak_indices = torch.nonzero(peak_mask, as_tuple=False)
-        
+
         if peak_indices.numel() == 0:
             # No peaks found
             results.append((torch.empty((0, 2), device=device), torch.empty(0, device=device)))
             continue
-        
+
         # Extract peak heights: (N,)
         peak_heights = images_squeezed[b][peak_mask]
-        
+
         # Sort by height if requested
         if ordered:
             sorted_indices = torch.argsort(peak_heights, descending=True)
             peak_indices = peak_indices[sorted_indices]
             peak_heights = peak_heights[sorted_indices]
-        
+
         results.append((peak_indices, peak_heights))
 
     return results

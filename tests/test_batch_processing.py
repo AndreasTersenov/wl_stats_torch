@@ -7,8 +7,8 @@ Tests vectorized operations and performance characteristics of batch processing.
 import pytest
 import torch
 
-from wl_stats_torch.statistics import WLStatistics
 from wl_stats_torch.peaks import find_peaks_batch, peaks_to_histogram
+from wl_stats_torch.statistics import WLStatistics
 
 
 class TestBatchProcessing:
@@ -358,7 +358,10 @@ class TestBatchOptimizations:
         # Vectorized approach (what the optimization does)
         all_heights = torch.cat(heights)
         batch_ids = torch.cat(
-            [torch.full((len(h),), i, device=device, dtype=torch.long) for i, h in enumerate(heights)]
+            [
+                torch.full((len(h),), i, device=device, dtype=torch.long)
+                for i, h in enumerate(heights)
+            ]
         )
 
         # Compute linear indices and histogram
@@ -397,7 +400,10 @@ class TestBatchOptimizations:
         # Vectorized approach (scatter_add)
         all_snr = torch.cat(snr_values)
         batch_ids = torch.cat(
-            [torch.full((len(s),), i, device=device, dtype=torch.long) for i, s in enumerate(snr_values)]
+            [
+                torch.full((len(s),), i, device=device, dtype=torch.long)
+                for i, s in enumerate(snr_values)
+            ]
         )
 
         bin_indices = torch.searchsorted(bins, all_snr, right=False)

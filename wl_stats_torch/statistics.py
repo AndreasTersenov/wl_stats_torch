@@ -10,7 +10,6 @@ Main class for computing weak lensing summary statistics including:
 from typing import Dict, List, Optional, Tuple, Union
 
 import torch
-import torch.nn.functional as F
 
 from .peaks import find_peaks_2d, find_peaks_batch, mono_scale_peaks_smoothed, peaks_to_histogram
 from .starlet import Starlet2D
@@ -89,21 +88,21 @@ class WLStatistics:
     ) -> torch.Tensor:
         """
         Broadcast noise_sigma to match image shape.
-        
+
         Args:
             noise_sigma: Scalar, (H, W), or (B, H, W)
             image: Input image (H, W) or (B, H, W)
             is_batched: Whether image is batched
-            
+
         Returns:
             Broadcasted noise_sigma matching image shape
         """
         if isinstance(noise_sigma, (int, float)):
             # Scalar: broadcast to full image shape
             return torch.full_like(image, noise_sigma, dtype=self.dtype, device=self.device)
-        
+
         noise_sigma = noise_sigma.to(self.device, dtype=self.dtype)
-        
+
         if is_batched:
             # Image is (B, H, W)
             if noise_sigma.ndim == 2:
@@ -136,20 +135,20 @@ class WLStatistics:
     ) -> Optional[torch.Tensor]:
         """
         Broadcast mask to match image shape.
-        
+
         Args:
             mask: None, (H, W), or (B, H, W)
             image: Input image (H, W) or (B, H, W)
             is_batched: Whether image is batched
-            
+
         Returns:
             Broadcasted mask matching image shape, or None
         """
         if mask is None:
             return None
-        
+
         mask = mask.to(self.device)
-        
+
         if is_batched:
             # Image is (B, H, W)
             if mask.ndim == 2:
@@ -176,7 +175,10 @@ class WLStatistics:
                 raise ValueError(f"Invalid mask shape: {mask.shape}")
 
     def compute_wavelet_transform(
-        self, image: torch.Tensor, noise_sigma: Union[float, torch.Tensor], mask: Optional[torch.Tensor] = None
+        self,
+        image: torch.Tensor,
+        noise_sigma: Union[float, torch.Tensor],
+        mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Compute wavelet transform and SNR for an image or batch of images.
@@ -194,10 +196,10 @@ class WLStatistics:
         """
         # Ensure image is on correct device and dtype
         image = image.to(self.device, dtype=self.dtype)
-        
+
         # Check if input is batched
         is_batched = self._is_batched(image)
-        
+
         # Broadcast noise_sigma and mask to match image shape
         noise_sigma = self._broadcast_noise_sigma(noise_sigma, image, is_batched)
         mask = self._broadcast_mask(mask, image, is_batched)
@@ -218,7 +220,9 @@ class WLStatistics:
         wavelet_coeffs = self.starlet(image_4d, return_coarse=True)  # (B, n_scales, H, W)
 
         # Compute noise levels
-        noise_levels = self.starlet.get_noise_levels(noise_sigma_4d, mask=mask_4d)  # (B, n_scales, H, W)
+        noise_levels = self.starlet.get_noise_levels(
+            noise_sigma_4d, mask=mask_4d
+        )  # (B, n_scales, H, W)
 
         # Compute SNR
         snr = torch.zeros_like(wavelet_coeffs)
@@ -295,7 +299,7 @@ class WLStatistics:
                 # Find peaks for all images in batch
                 # snr_scale needs to be (B, 1, H, W) for find_peaks_batch
                 snr_batch_4d = snr_scale.unsqueeze(1)
-                
+
                 # Prepare mask for find_peaks_batch
                 if mask is not None:
                     if mask.ndim == 2:
@@ -319,32 +323,34 @@ class WLStatistics:
                 # Process all peak heights at once with batch indices
                 batch_positions = []
                 batch_heights = []
-                
+
                 # Collect all heights with batch indices for vectorized histogramming
                 all_heights = []
                 batch_indices = []
-                
+
                 for i, (positions, heights) in enumerate(batch_results):
                     batch_positions.append(positions)
                     batch_heights.append(heights)
                     if heights.numel() > 0:
                         all_heights.append(heights)
-                        batch_indices.append(torch.full((len(heights),), i, dtype=torch.long, device=self.device))
-                
+                        batch_indices.append(
+                            torch.full((len(heights),), i, dtype=torch.long, device=self.device)
+                        )
+
                 # Vectorized histogram computation
                 if len(all_heights) > 0:
                     # Concatenate all heights and batch indices
                     all_heights_cat = torch.cat(all_heights)
                     batch_indices_cat = torch.cat(batch_indices)
-                    
+
                     # Bin all heights at once using searchsorted
                     bin_indices = torch.searchsorted(bins, all_heights_cat, right=True)
-                    
+
                     # Handle rightmost edge
                     rightmost_mask = all_heights_cat == bins[-1]
                     if rightmost_mask.any():
                         bin_indices[rightmost_mask] = n_bins
-                    
+
                     if clamp_overflow:
                         # Clip to valid range
                         bin_indices = torch.clamp(bin_indices, 1, n_bins)
@@ -352,11 +358,11 @@ class WLStatistics:
                     else:
                         # Only count values within valid range
                         valid_mask = (bin_indices >= 1) & (bin_indices <= n_bins)
-                    
+
                     # Filter to valid bins
                     valid_bin_indices = bin_indices[valid_mask] - 1  # Shift to 0-indexed
                     valid_batch_indices = batch_indices_cat[valid_mask]
-                    
+
                     # Create 2D histogram using bincount with offsets
                     # Each (batch_idx, bin_idx) pair maps to a unique linear index
                     linear_indices = valid_batch_indices * n_bins + valid_bin_indices
@@ -451,7 +457,7 @@ class WLStatistics:
                         mask_expanded = mask.unsqueeze(0).expand(batch_size, -1, -1)
                     else:
                         mask_expanded = mask
-                    
+
                     # Collect all valid SNR values across batch
                     snr_all_valid = []
                     for b in range(batch_size):
@@ -464,17 +470,19 @@ class WLStatistics:
                 current_max = max_snr if max_snr is not None else snr_all_valid.max().item()
 
                 # Create bins (shared across batch)
-                thresholds = torch.linspace(current_min, current_max, n_bins + 1, device=self.device)
+                thresholds = torch.linspace(
+                    current_min, current_max, n_bins + 1, device=self.device
+                )
                 bin_centers = 0.5 * (thresholds[:-1] + thresholds[1:])
 
                 # Vectorized processing for all images in batch
                 # Collect all SNR values with batch indices
                 all_snr_values = []
                 batch_indices = []
-                
+
                 for b in range(batch_size):
                     snr_img = snr_scale[b]
-                    
+
                     # Apply mask if provided
                     if mask is not None:
                         if mask.ndim == 2:
@@ -484,20 +492,22 @@ class WLStatistics:
                         snr_masked = snr_img[mask_img != 0]
                     else:
                         snr_masked = snr_img.flatten()
-                    
+
                     if snr_masked.numel() > 0:
                         all_snr_values.append(snr_masked)
-                        batch_indices.append(torch.full((len(snr_masked),), b, dtype=torch.long, device=self.device))
-                
+                        batch_indices.append(
+                            torch.full((len(snr_masked),), b, dtype=torch.long, device=self.device)
+                        )
+
                 # Vectorized L1-norm computation
                 if len(all_snr_values) > 0:
                     # Concatenate all SNR values and batch indices
                     all_snr_cat = torch.cat(all_snr_values)
                     batch_indices_cat = torch.cat(batch_indices)
-                    
+
                     # Digitize all SNR values at once
                     bin_indices = torch.searchsorted(thresholds, all_snr_cat, right=False)
-                    
+
                     if clamp_overflow:
                         # Clip to valid range [1, n_bins]
                         bin_indices = torch.clamp(bin_indices, 1, n_bins)
@@ -505,16 +515,18 @@ class WLStatistics:
                     else:
                         # Only count values within valid range
                         valid_mask = (bin_indices >= 1) & (bin_indices <= n_bins)
-                    
+
                     # Filter to valid bins
                     valid_bin_indices = bin_indices[valid_mask] - 1  # Shift to 0-indexed
                     valid_batch_indices = batch_indices_cat[valid_mask]
                     valid_snr_values = all_snr_cat[valid_mask]
-                    
+
                     # Compute L1 norms: sum of absolute values per (batch, bin) pair
                     # Use scatter_add to accumulate sums efficiently
                     linear_indices = valid_batch_indices * n_bins + valid_bin_indices
-                    l1_batch_flat = torch.zeros(batch_size * n_bins, dtype=valid_snr_values.dtype, device=self.device)
+                    l1_batch_flat = torch.zeros(
+                        batch_size * n_bins, dtype=valid_snr_values.dtype, device=self.device
+                    )
                     l1_batch_flat.scatter_add_(0, linear_indices, torch.abs(valid_snr_values))
                     l1_batch = l1_batch_flat.reshape(batch_size, n_bins)
                 else:
@@ -540,7 +552,9 @@ class WLStatistics:
                 current_max = max_snr if max_snr is not None else snr_masked.max().item()
 
                 # Create bins
-                thresholds = torch.linspace(current_min, current_max, n_bins + 1, device=self.device)
+                thresholds = torch.linspace(
+                    current_min, current_max, n_bins + 1, device=self.device
+                )
                 bin_centers = 0.5 * (thresholds[:-1] + thresholds[1:])
 
                 # Digitize SNR values
@@ -629,7 +643,11 @@ class WLStatistics:
                 else:
                     noise_sigma_scalar = noise_sigma.item()
             else:
-                noise_sigma_scalar = float(noise_sigma) if isinstance(noise_sigma, (int, float)) else noise_sigma.item()
+                noise_sigma_scalar = (
+                    float(noise_sigma)
+                    if isinstance(noise_sigma, (int, float))
+                    else noise_sigma.item()
+                )
 
             for b in range(batch_size):
                 img_b = image[b]
