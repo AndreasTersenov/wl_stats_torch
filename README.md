@@ -156,13 +156,13 @@ See the `examples/` directory for Python scripts and `notebooks/` for Jupyter no
 
 ## Documentation
 
-- 📖 **User Guide**: See `docs-md/` directory for detailed documentation
-- 🚀 **Quick Start**: `docs-md/QUICKSTART.md`
-- 📦 **Installation**: `docs-md/INSTALL.md`
-- 🔧 **Contributing**: `docs-md/CONTRIBUTING.md`
-- 🔍 **API Reference**: `docs-md/API.md`
-- ⚡ **Batch Processing**: `docs-md/BATCH_PROCESSING.md` - NEW!
-- ✅ **Test Fixes**: `docs-md/TEST_FIXES.md`
+- **User Guide**: See `docs-md/` directory for detailed documentation
+- **Quick Start**: `docs-md/QUICKSTART.md`
+- **Installation**: `docs-md/INSTALL.md`
+- **Contributing**: `docs-md/CONTRIBUTING.md`
+- **API Reference**: `docs-md/API.md`
+- **Batch Processing**: `docs-md/BATCH_PROCESSING.md`
+- **Test Fixes**: `docs-md/TEST_FIXES.md`
 
 Build the full documentation with Sphinx:
 ```bash
