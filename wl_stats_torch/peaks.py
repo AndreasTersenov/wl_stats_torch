@@ -138,7 +138,10 @@ def find_peaks_batch(
     ordered: bool = True,
 ) -> List[Tuple[torch.Tensor, torch.Tensor]]:
     """
-    Find peaks in a batch of images.
+    Find peaks in a batch of images (VECTORIZED VERSION).
+
+    This implementation processes all images in the batch in parallel,
+    avoiding sequential loops for better GPU utilization.
 
     Args:
         images: Tensor of shape (B, 1, H, W) or (B, H, W)
@@ -151,25 +154,88 @@ def find_peaks_batch(
         List of (positions, heights) tuples, one per image in batch
     """
     if images.ndim == 3:
-        images = images.unsqueeze(1)  # Add channel dimension
+        images = images.unsqueeze(1)  # Add channel dimension: (B, 1, H, W)
+    
+    if images.ndim != 4 or images.shape[1] != 1:
+        raise ValueError(f"Expected images of shape (B, 1, H, W), got {images.shape}")
 
-    batch_size = images.shape[0]
+    B, _, H, W = images.shape
+    device = images.device
 
+    # Handle threshold
+    if threshold is None:
+        threshold = images.min().item()
+
+    # Handle masks
     if masks is not None:
         if masks.ndim == 3:
-            masks = masks.unsqueeze(1)
-        if masks.shape[0] != batch_size:
+            masks = masks.unsqueeze(1)  # (B, 1, H, W)
+        if masks.shape[0] != B:
             raise ValueError("Batch size mismatch between images and masks")
+        masks = masks.bool()
+    else:
+        masks = torch.ones(B, 1, H, W, dtype=torch.bool, device=device)
 
+    # If not including borders, zero out the border
+    if not include_border:
+        border_mask = torch.ones(B, 1, H, W, dtype=torch.bool, device=device)
+        border_mask[:, :, 0, :] = False
+        border_mask[:, :, -1, :] = False
+        border_mask[:, :, :, 0] = False
+        border_mask[:, :, :, -1] = False
+        masks = masks & border_mask
+
+    # Pad images for neighbor extraction: (B, 1, H+2, W+2)
+    pad = 1
+    images_padded = F.pad(images, (pad, pad, pad, pad), mode="constant", value=float("-inf"))
+
+    # Extract all 8 neighbors in parallel
+    neighbors = []
+    for di in [-1, 0, 1]:
+        for dj in [-1, 0, 1]:
+            if di == 0 and dj == 0:
+                continue  # Skip center
+            # Crop to get shifted version: (B, 1, H, W)
+            shifted = images_padded[:, :, 1 + di : 1 + di + H, 1 + dj : 1 + dj + W]
+            neighbors.append(shifted)
+
+    # Stack neighbors: (B, 8, 1, H, W) -> (B, 8, H, W)
+    neighbors_tensor = torch.stack(neighbors, dim=1).squeeze(2)
+
+    # Find max neighbor at each position: (B, H, W)
+    max_neighbor, _ = neighbors_tensor.max(dim=1)
+
+    # Squeeze images for comparison: (B, H, W)
+    images_squeezed = images.squeeze(1)
+    masks_squeezed = masks.squeeze(1)
+
+    # Find peaks: (B, H, W) boolean tensor
+    is_peak = (images_squeezed > max_neighbor) & (images_squeezed >= threshold) & masks_squeezed
+
+    # Extract peaks for each image in the batch
     results = []
-    for i in range(batch_size):
-        image = images[i, 0]  # (H, W)
-        mask = masks[i, 0] if masks is not None else None
-
-        positions, heights = find_peaks_2d(
-            image, threshold=threshold, mask=mask, include_border=include_border, ordered=ordered
-        )
-        results.append((positions, heights))
+    for b in range(B):
+        # Get peak mask for this image: (H, W)
+        peak_mask = is_peak[b]
+        
+        # Get peak positions: (N, 2)
+        peak_indices = torch.nonzero(peak_mask, as_tuple=False)
+        
+        if peak_indices.numel() == 0:
+            # No peaks found
+            results.append((torch.empty((0, 2), device=device), torch.empty(0, device=device)))
+            continue
+        
+        # Extract peak heights: (N,)
+        peak_heights = images_squeezed[b][peak_mask]
+        
+        # Sort by height if requested
+        if ordered:
+            sorted_indices = torch.argsort(peak_heights, descending=True)
+            peak_indices = peak_indices[sorted_indices]
+            peak_heights = peak_heights[sorted_indices]
+        
+        results.append((peak_indices, peak_heights))
 
     return results
 

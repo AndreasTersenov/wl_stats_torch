@@ -315,16 +315,56 @@ class WLStatistics:
                     ordered=True,
                 )
 
-                # Compute histograms for each image in batch
-                batch_counts = torch.zeros(batch_size, n_bins, device=self.device)
+                # Vectorized histogram computation for all images in batch
+                # Process all peak heights at once with batch indices
                 batch_positions = []
                 batch_heights = []
-
+                
+                # Collect all heights with batch indices for vectorized histogramming
+                all_heights = []
+                batch_indices = []
+                
                 for i, (positions, heights) in enumerate(batch_results):
-                    counts = peaks_to_histogram(heights, bins, clamp_overflow=clamp_overflow)
-                    batch_counts[i] = counts
                     batch_positions.append(positions)
                     batch_heights.append(heights)
+                    if heights.numel() > 0:
+                        all_heights.append(heights)
+                        batch_indices.append(torch.full((len(heights),), i, dtype=torch.long, device=self.device))
+                
+                # Vectorized histogram computation
+                if len(all_heights) > 0:
+                    # Concatenate all heights and batch indices
+                    all_heights_cat = torch.cat(all_heights)
+                    batch_indices_cat = torch.cat(batch_indices)
+                    
+                    # Bin all heights at once using searchsorted
+                    bin_indices = torch.searchsorted(bins, all_heights_cat, right=True)
+                    
+                    # Handle rightmost edge
+                    rightmost_mask = all_heights_cat == bins[-1]
+                    if rightmost_mask.any():
+                        bin_indices[rightmost_mask] = n_bins
+                    
+                    if clamp_overflow:
+                        # Clip to valid range
+                        bin_indices = torch.clamp(bin_indices, 1, n_bins)
+                        valid_mask = torch.ones_like(bin_indices, dtype=torch.bool)
+                    else:
+                        # Only count values within valid range
+                        valid_mask = (bin_indices >= 1) & (bin_indices <= n_bins)
+                    
+                    # Filter to valid bins
+                    valid_bin_indices = bin_indices[valid_mask] - 1  # Shift to 0-indexed
+                    valid_batch_indices = batch_indices_cat[valid_mask]
+                    
+                    # Create 2D histogram using bincount with offsets
+                    # Each (batch_idx, bin_idx) pair maps to a unique linear index
+                    linear_indices = valid_batch_indices * n_bins + valid_bin_indices
+                    flat_counts = torch.bincount(linear_indices, minlength=batch_size * n_bins)
+                    batch_counts = flat_counts.reshape(batch_size, n_bins).float()
+                else:
+                    # No peaks found in any image
+                    batch_counts = torch.zeros(batch_size, n_bins, device=self.device)
 
                 peak_counts_list.append(batch_counts)
                 peak_positions_list.append(batch_positions)
@@ -427,12 +467,14 @@ class WLStatistics:
                 thresholds = torch.linspace(current_min, current_max, n_bins + 1, device=self.device)
                 bin_centers = 0.5 * (thresholds[:-1] + thresholds[1:])
 
-                # Process each image in batch
-                l1_batch = torch.zeros(batch_size, n_bins, device=self.device)
-
+                # Vectorized processing for all images in batch
+                # Collect all SNR values with batch indices
+                all_snr_values = []
+                batch_indices = []
+                
                 for b in range(batch_size):
                     snr_img = snr_scale[b]
-
+                    
                     # Apply mask if provided
                     if mask is not None:
                         if mask.ndim == 2:
@@ -442,25 +484,42 @@ class WLStatistics:
                         snr_masked = snr_img[mask_img != 0]
                     else:
                         snr_masked = snr_img.flatten()
-
-                    # Digitize SNR values
-                    bin_indices = torch.searchsorted(thresholds, snr_masked, right=False)
-
+                    
+                    if snr_masked.numel() > 0:
+                        all_snr_values.append(snr_masked)
+                        batch_indices.append(torch.full((len(snr_masked),), b, dtype=torch.long, device=self.device))
+                
+                # Vectorized L1-norm computation
+                if len(all_snr_values) > 0:
+                    # Concatenate all SNR values and batch indices
+                    all_snr_cat = torch.cat(all_snr_values)
+                    batch_indices_cat = torch.cat(batch_indices)
+                    
+                    # Digitize all SNR values at once
+                    bin_indices = torch.searchsorted(thresholds, all_snr_cat, right=False)
+                    
                     if clamp_overflow:
+                        # Clip to valid range [1, n_bins]
                         bin_indices = torch.clamp(bin_indices, 1, n_bins)
-                        for bin_idx in range(1, n_bins + 1):
-                            mask_bin = bin_indices == bin_idx
-                            if mask_bin.any():
-                                l1_batch[b, bin_idx - 1] = torch.abs(snr_masked[mask_bin]).sum()
+                        valid_mask = torch.ones_like(bin_indices, dtype=torch.bool)
                     else:
+                        # Only count values within valid range
                         valid_mask = (bin_indices >= 1) & (bin_indices <= n_bins)
-                        if valid_mask.any():
-                            bin_indices_valid = bin_indices[valid_mask]
-                            snr_valid = snr_masked[valid_mask]
-                            for bin_idx in range(1, n_bins + 1):
-                                mask_bin = bin_indices_valid == bin_idx
-                                if mask_bin.any():
-                                    l1_batch[b, bin_idx - 1] = torch.abs(snr_valid[mask_bin]).sum()
+                    
+                    # Filter to valid bins
+                    valid_bin_indices = bin_indices[valid_mask] - 1  # Shift to 0-indexed
+                    valid_batch_indices = batch_indices_cat[valid_mask]
+                    valid_snr_values = all_snr_cat[valid_mask]
+                    
+                    # Compute L1 norms: sum of absolute values per (batch, bin) pair
+                    # Use scatter_add to accumulate sums efficiently
+                    linear_indices = valid_batch_indices * n_bins + valid_bin_indices
+                    l1_batch_flat = torch.zeros(batch_size * n_bins, dtype=valid_snr_values.dtype, device=self.device)
+                    l1_batch_flat.scatter_add_(0, linear_indices, torch.abs(valid_snr_values))
+                    l1_batch = l1_batch_flat.reshape(batch_size, n_bins)
+                else:
+                    # No valid SNR values
+                    l1_batch = torch.zeros(batch_size, n_bins, device=self.device)
 
                 bins_list.append(bin_centers)
                 l1_norms_list.append(l1_batch)
