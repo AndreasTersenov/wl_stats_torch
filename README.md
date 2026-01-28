@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/AndreasTersenov/wl_stats_torch/actions/workflows/tests.yml/badge.svg)](https://github.com/AndreasTersenov/wl_stats_torch/actions/workflows/tests.yml)
 [![Lint](https://github.com/AndreasTersenov/wl_stats_torch/actions/workflows/lint.yml/badge.svg)](https://github.com/AndreasTersenov/wl_stats_torch/actions/workflows/lint.yml)
-[![Documentation](https://wl-stats-torch.readthedocs.io/en/latest/?badge=latest)](https://wl-stats-torch.readthedocs.io/en/latest/)
+[![Documentation Status](https://readthedocs.org/projects/wl-stats-torch/badge/?version=latest)](https://wl-stats-torch.readthedocs.io/en/latest/)
 [![codecov](https://codecov.io/gh/AndreasTersenov/wl_stats_torch/branch/main/graph/badge.svg)](https://codecov.io/gh/AndreasTersenov/wl_stats_torch)
 [![PyPI version](https://badge.fury.io/py/wl-stats-torch.svg)](https://badge.fury.io/py/wl-stats-torch)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)

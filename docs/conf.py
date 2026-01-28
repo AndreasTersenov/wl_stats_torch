@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.abspath(".."))
 # -- Project information -----------------------------------------------------
 
 project = "wl-stats-torch"
-copyright = "2025, Andreas Tersenov"
+copyright = "2025-2026, Andreas Tersenov"
 author = "Andreas Tersenov"
 release = "0.1.0"
 

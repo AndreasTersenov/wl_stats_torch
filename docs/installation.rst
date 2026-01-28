@@ -10,7 +10,16 @@ Requirements
 * SciPy >= 1.7.0
 * Matplotlib >= 3.3.0
 
-Install from source
+Install from PyPI
+-----------------
+
+The easiest way to install wl-stats-torch:
+
+.. code-block:: bash
+
+   pip install wl-stats-torch
+
+Install from Source
 -------------------
 
 Clone the repository and install in development mode:
@@ -27,6 +36,37 @@ For development with testing and documentation tools:
 
    pip install -e ".[dev]"
 
+Docker
+------
+
+Run wl-stats-torch in a container without installing dependencies locally.
+
+**CPU Version:**
+
+.. code-block:: bash
+
+   docker build -t wl-stats-torch:cpu .
+   docker run -it --rm -v $(pwd)/data:/data wl-stats-torch:cpu
+
+**GPU Version** (requires nvidia-docker):
+
+.. code-block:: bash
+
+   docker build -t wl-stats-torch:cuda -f Dockerfile.cuda .
+   docker run -it --rm --gpus all -v $(pwd)/data:/data wl-stats-torch:cuda
+
+**Docker Compose:**
+
+.. code-block:: bash
+
+   # CPU
+   docker compose run --rm wl-stats-cpu
+
+   # GPU
+   docker compose run --rm wl-stats-gpu
+
+See the ``docs-md/DOCKER.md`` file for detailed Docker usage instructions.
+
 GPU Support
 -----------
 
@@ -42,5 +82,21 @@ Check your PyTorch CUDA support:
 .. code-block:: python
 
    import torch
-   print(torch.cuda.is_available())
-   print(torch.cuda.get_device_name(0))
+   print(f"CUDA available: {torch.cuda.is_available()}")
+   if torch.cuda.is_available():
+       print(f"Device: {torch.cuda.get_device_name(0)}")
+
+Verify Installation
+-------------------
+
+Test that the package is installed correctly:
+
+.. code-block:: python
+
+   from wl_stats_torch import WLStatistics
+   import torch
+
+   stats = WLStatistics(n_scales=3)
+   kappa = torch.randn(64, 64)
+   results = stats.compute_all_statistics(kappa, 0.01)
+   print("Installation successful!")
