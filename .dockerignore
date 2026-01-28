@@ -1,0 +1,83 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Documentation
+docs/_build/
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local development
+*.local
+.envrc
+
+# Docker (don't include Docker files in context for nested builds)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Data directories (user should mount these)
+data/
+output/
+results/
+
+# CosmoStat (external dependency, not needed in container)
+cosmostat/
+
+# Benchmarks and validation scripts
+benchmark_*.py
+validate_*.py
+test_*.py
+
+# Notebooks directory
+notebooks/

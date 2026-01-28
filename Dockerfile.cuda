@@ -1,0 +1,63 @@
+# Dockerfile for wl-stats-torch (CUDA/GPU variant)
+# Requires nvidia-docker runtime
+
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+
+LABEL maintainer="Andreas Tersenov <andrewtersenov@gmail.com>"
+LABEL description="GPU-accelerated weak lensing summary statistics with PyTorch (CUDA variant)"
+LABEL version="0.1.0"
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install Python 3.11 and dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    && add-apt-repository ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-venv \
+    python3.11-dev \
+    python3-pip \
+    build-essential \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+
+# Set Python 3.11 as default
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+
+# Upgrade pip
+RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
+
+WORKDIR /build
+
+# Copy package files
+COPY pyproject.toml README.md ./
+COPY wl_stats_torch/ ./wl_stats_torch/
+
+# Install PyTorch with CUDA support
+RUN pip install --no-cache-dir \
+    torch --index-url https://download.pytorch.org/whl/cu124
+
+# Install the package
+RUN pip install --no-cache-dir .
+
+# Clean up build directory
+WORKDIR /app
+RUN rm -rf /build
+
+# Create directory for user data
+RUN mkdir -p /data
+
+# Set working directory for data operations
+WORKDIR /data
+
+# Environment variables for CUDA
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+# Default command: Python interpreter
+CMD ["python"]
