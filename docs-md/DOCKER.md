@@ -50,8 +50,8 @@ The CPU image uses a multi-stage build to minimize size:
 docker build -t wl-stats-torch:cuda -f Dockerfile.cuda .
 ```
 
-The GPU image is based on `nvidia/cuda:12.1-runtime-ubuntu22.04` and includes:
-- CUDA 12.1 runtime
+The GPU image is based on `nvidia/cuda:12.4.1-runtime-ubuntu22.04` and includes:
+- CUDA 12.4 runtime
 - Python 3.11
 - PyTorch with CUDA support
 
@@ -239,7 +239,7 @@ if torch.cuda.is_available():
    sudo apt-get install -y nvidia-container-toolkit
    sudo systemctl restart docker
    ```
-3. Test with: `docker run --rm --gpus all nvidia/cuda:12.1-base-ubuntu22.04 nvidia-smi`
+3. Test with: `docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi`
 
 ### Permission Issues
 

@@ -20,12 +20,8 @@ COPY wl_stats_torch/ ./wl_stats_torch/
 # Install pip and build tools
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Build wheel
-RUN pip wheel --no-cache-dir --wheel-dir=/build/wheels .
-
-# Install CPU-only PyTorch (smaller than default)
-RUN pip wheel --no-cache-dir --wheel-dir=/build/wheels \
-    torch --index-url https://download.pytorch.org/whl/cpu
+# Build wheel for wl_stats_torch only (no dependencies)
+RUN pip wheel --no-cache-dir --no-deps --wheel-dir=/build/wheels .
 
 # ============================================
 # Runtime stage
@@ -44,12 +40,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Copy wheels from builder
+# Copy wheel from builder
 COPY --from=builder /build/wheels /wheels
 
 # Install CPU-only PyTorch first, then the package
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir /wheels/torch*.whl \
+    && pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir /wheels/wl_stats_torch*.whl \
     && rm -rf /wheels
 

@@ -1,7 +1,7 @@
 # Dockerfile for wl-stats-torch (CUDA/GPU variant)
 # Requires nvidia-docker runtime
 
-FROM nvidia/cuda:12.1-runtime-ubuntu22.04
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
 
 LABEL maintainer="Andreas Tersenov <andrewtersenov@gmail.com>"
 LABEL description="GPU-accelerated weak lensing summary statistics with PyTorch (CUDA variant)"
@@ -40,7 +40,7 @@ COPY wl_stats_torch/ ./wl_stats_torch/
 
 # Install PyTorch with CUDA support
 RUN pip install --no-cache-dir \
-    torch --index-url https://download.pytorch.org/whl/cu121
+    torch --index-url https://download.pytorch.org/whl/cu124
 
 # Install the package
 RUN pip install --no-cache-dir .
