@@ -154,11 +154,39 @@ See the `examples/` directory for Python scripts and `notebooks/` for Jupyter no
 - `des_mock_demo.ipynb` - DES mock catalog analysis
 - `pycs_demo.ipynb` - PyCS integration example
 
+## Docker
+
+Run `wl-stats-torch` in a container without installing dependencies locally.
+
+### CPU Version
+```bash
+docker build -t wl-stats-torch:cpu .
+docker run -it --rm -v $(pwd)/data:/data wl-stats-torch:cpu
+```
+
+### GPU Version (requires nvidia-docker)
+```bash
+docker build -t wl-stats-torch:cuda -f Dockerfile.cuda .
+docker run -it --rm --gpus all -v $(pwd)/data:/data wl-stats-torch:cuda
+```
+
+### Docker Compose
+```bash
+# CPU
+docker compose run --rm wl-stats-cpu
+
+# GPU
+docker compose run --rm wl-stats-gpu
+```
+
+See `docs-md/DOCKER.md` for detailed Docker usage instructions.
+
 ## Documentation
 
 - **User Guide**: See `docs-md/` directory for detailed documentation
 - **Quick Start**: `docs-md/QUICKSTART.md`
 - **Installation**: `docs-md/INSTALL.md`
+- **Docker**: `docs-md/DOCKER.md`
 - **Contributing**: `docs-md/CONTRIBUTING.md`
 - **API Reference**: `docs-md/API.md`
 - **Batch Processing**: `docs-md/BATCH_PROCESSING.md`

@@ -1,0 +1,71 @@
+services:
+  # CPU variant - for systems without GPU
+  wl-stats-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: wl-stats-torch:cpu
+    container_name: wl-stats-cpu
+    volumes:
+      # Mount local data directory
+      - ./data:/data
+      # Mount scripts for execution
+      - ./examples:/examples:ro
+    working_dir: /data
+    stdin_open: true
+    tty: true
+
+  # GPU variant - requires nvidia-docker runtime
+  wl-stats-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.cuda
+    image: wl-stats-torch:cuda
+    container_name: wl-stats-gpu
+    volumes:
+      # Mount local data directory
+      - ./data:/data
+      # Mount scripts for execution
+      - ./examples:/examples:ro
+    working_dir: /data
+    stdin_open: true
+    tty: true
+    # GPU configuration
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Run tests in CPU container
+  test-cpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: wl-stats-torch:cpu
+    volumes:
+      - ./tests:/tests:ro
+    working_dir: /
+    command: >
+      sh -c "pip install pytest pytest-cov && pytest /tests -v --tb=short"
+
+  # Run tests in GPU container
+  test-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.cuda
+    image: wl-stats-torch:cuda
+    volumes:
+      - ./tests:/tests:ro
+    working_dir: /
+    command: >
+      sh -c "pip install pytest pytest-cov && pytest /tests -v --tb=short"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
