@@ -2,8 +2,6 @@
 Visualization utilities for weak lensing statistics.
 """
 
-from typing import List, Optional, Tuple
-
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -11,14 +9,14 @@ import torch
 
 def plot_peak_histograms(
     bin_centers: torch.Tensor,
-    peak_counts: List[torch.Tensor],
-    scale_labels: Optional[List[str]] = None,
+    peak_counts: list[torch.Tensor],
+    scale_labels: list[str] | None = None,
     title: str = "Wavelet Peak Counts",
     xlabel: str = "SNR",
     ylabel: str = "Peak Counts",
     log_scale: bool = True,
-    figsize: Tuple[int, int] = (10, 6),
-    save_path: Optional[str] = None,
+    figsize: tuple[int, int] = (10, 6),
+    save_path: str | None = None,
 ):
     """
     Plot peak count histograms for multiple scales.
@@ -66,16 +64,16 @@ def plot_peak_histograms(
 
 
 def plot_l1_norms(
-    l1_bins: List[torch.Tensor],
-    l1_norms: List[torch.Tensor],
-    scale_labels: Optional[List[str]] = None,
+    l1_bins: list[torch.Tensor],
+    l1_norms: list[torch.Tensor],
+    scale_labels: list[str] | None = None,
     title: str = "Wavelet L1-Norms",
     xlabel: str = "SNR",
     ylabel: str = "L1-Norm",
     log_scale: bool = False,
-    xlim: Optional[Tuple[float, float]] = None,
-    figsize: Tuple[int, int] = (10, 6),
-    save_path: Optional[str] = None,
+    xlim: tuple[float, float] | None = None,
+    figsize: tuple[int, int] = (10, 6),
+    save_path: str | None = None,
 ):
     """
     Plot L1-norm as a function of SNR for multiple scales.
@@ -126,14 +124,14 @@ def plot_l1_norms(
 
 def plot_wavelet_scales(
     wavelet_coeffs: torch.Tensor,
-    peak_positions: Optional[List[torch.Tensor]] = None,
-    titles: Optional[List[str]] = None,
+    peak_positions: list[torch.Tensor] | None = None,
+    titles: list[str] | None = None,
     cmap: str = "viridis",
-    vmin: Optional[float] = None,
-    vmax: Optional[float] = None,
-    figsize: Tuple[int, int] = (15, 10),
+    vmin: float | None = None,
+    vmax: float | None = None,
+    figsize: tuple[int, int] = (15, 10),
     mark_peaks: bool = True,
-    save_path: Optional[str] = None,
+    save_path: str | None = None,
 ):
     """
     Visualize wavelet scales with optional peak markers.
@@ -199,13 +197,13 @@ def plot_wavelet_scales(
 def plot_snr_map(
     snr_coeffs: torch.Tensor,
     scale_idx: int = 0,
-    peak_positions: Optional[torch.Tensor] = None,
-    title: Optional[str] = None,
+    peak_positions: torch.Tensor | None = None,
+    title: str | None = None,
     cmap: str = "RdBu_r",
     vmin: float = -5,
     vmax: float = 5,
-    figsize: Tuple[int, int] = (10, 8),
-    save_path: Optional[str] = None,
+    figsize: tuple[int, int] = (10, 8),
+    save_path: str | None = None,
 ):
     """
     Plot SNR map for a specific scale with optional peak markers.
@@ -259,14 +257,14 @@ def plot_snr_map(
 
 
 def plot_comparison(
-    results_list: List[dict],
-    labels: List[str],
+    results_list: list[dict],
+    labels: list[str],
     statistic: str = "wavelet_peak_counts",
     scale_idx: int = 0,
-    title: Optional[str] = None,
+    title: str | None = None,
     log_scale: bool = True,
-    figsize: Tuple[int, int] = (10, 6),
-    save_path: Optional[str] = None,
+    figsize: tuple[int, int] = (10, 6),
+    save_path: str | None = None,
 ):
     """
     Compare the same statistic across multiple result sets.

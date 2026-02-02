@@ -1,5 +1,5 @@
 """
-2D Starlet (à trous wavelet) Transform in PyTorch
+2D Starlet (a trous wavelet) Transform in PyTorch
 
 This module implements the 2D starlet transform using PyTorch for GPU acceleration.
 The starlet transform is an isotropic undecimated wavelet transform using a B3-spline
@@ -10,8 +10,6 @@ References:
     "The Undecimated Wavelet Decomposition and its Reconstruction"
     IEEE Transactions on Image Processing, 16(2), 297-309.
 """
-
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -60,12 +58,12 @@ def fft_convolve2d(signal: torch.Tensor, kernel: torch.Tensor) -> torch.Tensor:
     start_w = pad_w // 2
     result_same = result[start_h : start_h + s_h, start_w : start_w + s_w]
 
-    return result_same
+    return result_same  # type: ignore[no-any-return]
 
 
 class Starlet2D(nn.Module):
     """
-    2D Starlet Transform (à trous algorithm) with B3-spline kernel.
+    2D Starlet Transform (a trous algorithm) with B3-spline kernel.
 
     This implements an undecimated wavelet transform where each scale is computed
     by taking the difference between successive smoothed versions of the image.
@@ -88,7 +86,7 @@ class Starlet2D(nn.Module):
     def __init__(
         self,
         n_scales: int = 5,
-        device: Optional[torch.device] = None,
+        device: torch.device | None = None,
         dtype: torch.dtype = torch.float32,
     ):
         """
@@ -108,6 +106,9 @@ class Starlet2D(nn.Module):
         self.n_scales = n_scales
         self.device = device if device is not None else torch.device("cpu")
         self.dtype = dtype
+
+        # Cache for impulse response coefficients, keyed by (height, width)
+        self._impulse_cache: dict[tuple[int, int], torch.Tensor] = {}
 
         # Define the 1D B3-spline kernel coefficients
         # These are the coefficients for the B3-spline: [1/16, 1/4, 3/8, 1/4, 1/16]
@@ -160,6 +161,12 @@ class Starlet2D(nn.Module):
         # Move all convolutions to the correct device
         self.to(self.device)
 
+    def __repr__(self) -> str:
+        return (
+            f"Starlet2D(n_scales={self.n_scales}, device={self.device}, "
+            f"dtype={self.dtype}, generation=2)"
+        )
+
     def forward(
         self, x: torch.Tensor, return_coarse: bool = True, return_dict: bool = False
     ) -> torch.Tensor:
@@ -209,7 +216,7 @@ class Starlet2D(nn.Module):
         detail_scales = []
         coarse = x
 
-        # Compute wavelet scales using à trous algorithm
+        # Compute wavelet scales using a trous algorithm
         for scale_idx in range(self.n_scales - 1):
             # Smooth the current coarse approximation
             next_coarse = self.convs[scale_idx](coarse)
@@ -231,7 +238,7 @@ class Starlet2D(nn.Module):
         coeffs = torch.cat(all_scales, dim=1)
 
         if return_dict:
-            return {"coeffs": coeffs, "detail_scales": detail_scales, "coarse_scale": coarse}
+            return {"coeffs": coeffs, "detail_scales": detail_scales, "coarse_scale": coarse}  # type: ignore[return-value]
 
         return coeffs
 
@@ -287,8 +294,34 @@ class Starlet2D(nn.Module):
         ]
         return resolutions
 
+    def _get_impulse_coeffs_squared(self, height: int, width: int) -> torch.Tensor:
+        """
+        Get cached squared impulse response coefficients for a given image shape.
+
+        Args:
+            height: Image height
+            width: Image width
+
+        Returns:
+            Squared impulse response coefficients, shape (1, n_scales, H, W)
+        """
+        key = (height, width)
+        if key in self._impulse_cache:
+            cached = self._impulse_cache[key]
+            # Validate device/dtype match (invalidate if changed)
+            if str(cached.device) != str(self.device) or cached.dtype != self.dtype:
+                del self._impulse_cache[key]
+            else:
+                return cached
+
+        impulse = torch.zeros(1, 1, height, width, device=self.device, dtype=self.dtype)
+        impulse[0, 0, height // 2, width // 2] = 1.0
+        impulse_coeffs = self.forward(impulse, return_coarse=True)
+        self._impulse_cache[key] = impulse_coeffs**2
+        return self._impulse_cache[key]
+
     def get_noise_levels(
-        self, noise_sigma: torch.Tensor, mask: Optional[torch.Tensor] = None
+        self, noise_sigma: torch.Tensor, mask: torch.Tensor | None = None
     ) -> torch.Tensor:
         """
         Compute noise standard deviation for each wavelet coefficient.
@@ -325,15 +358,8 @@ class Starlet2D(nn.Module):
         # Compute variance map
         variance_map = noise_sigma**2  # (B, 1, H, W)
 
-        # Create impulse (delta function) at the center
-        impulse = torch.zeros(1, 1, height, width, device=self.device, dtype=self.dtype)
-        impulse[0, 0, height // 2, width // 2] = 1.0
-
-        # Get the wavelet impulse response by transforming the delta function
-        impulse_coeffs = self.forward(impulse, return_coarse=True)  # (1, n_scales, H, W)
-
-        # Square the impulse response coefficients
-        impulse_coeffs_squared = impulse_coeffs**2  # (1, n_scales, H, W)
+        # Get cached squared impulse response
+        impulse_coeffs_squared = self._get_impulse_coeffs_squared(height, width)
 
         # For each scale, convolve the variance map with the squared impulse response
         # Use PyTorch FFT convolution to stay on GPU and avoid numpy conversion
@@ -369,7 +395,7 @@ class Starlet2D(nn.Module):
         self,
         image: torch.Tensor,
         noise_sigma: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
+        mask: torch.Tensor | None = None,
         keep_sign: bool = False,
     ) -> torch.Tensor:
         """
@@ -402,7 +428,7 @@ class Starlet2D(nn.Module):
 
     def extra_repr(self) -> str:
         """String representation for printing."""
-        return f"n_scales={self.n_scales}, device={self.device}"
+        return f"n_scales={self.n_scales}, device={self.device}, dtype={self.dtype}"
 
 
 def test_starlet():
@@ -439,7 +465,7 @@ def test_starlet():
     snr = starlet.get_snr(image, noise_sigma)
     print(f"SNR shape: {snr.shape}")
 
-    print("✓ All tests passed!")
+    print("All tests passed!")
 
 
 if __name__ == "__main__":

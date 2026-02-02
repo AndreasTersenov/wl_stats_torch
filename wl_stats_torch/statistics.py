@@ -7,7 +7,7 @@ Main class for computing weak lensing summary statistics including:
 - Mono-scale peak counts with Gaussian smoothing
 """
 
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any
 
 import torch
 
@@ -38,7 +38,7 @@ class WLStatistics:
     def __init__(
         self,
         n_scales: int = 5,
-        device: Optional[torch.device] = None,
+        device: torch.device | None = None,
         pixel_arcmin: float = 1.0,
         dtype: torch.dtype = torch.float64,
     ):
@@ -63,19 +63,25 @@ class WLStatistics:
         self.starlet = Starlet2D(n_scales=n_scales, device=device, dtype=dtype)
 
         # Storage for computed results
-        self.wavelet_coeffs = None
-        self.noise_levels = None
-        self.snr_coeffs = None
+        self.wavelet_coeffs: torch.Tensor | None = None
+        self.noise_levels: torch.Tensor | None = None
+        self.snr_coeffs: torch.Tensor | None = None
 
-        # Computed statistics
-        self.wavelet_peak_counts = None
-        self.wavelet_peak_positions = None
-        self.wavelet_peak_heights = None
-        self.l1_norms = None
-        self.l1_bins = None
-        self.mono_peak_counts = None
+        # Computed statistics (types vary between single and batch processing)
+        self.wavelet_peak_counts: Any = None
+        self.wavelet_peak_positions: Any = None
+        self.wavelet_peak_heights: Any = None
+        self.l1_norms: Any = None
+        self.l1_bins: Any = None
+        self.mono_peak_counts: torch.Tensor | None = None
 
-    def get_scale_resolutions(self) -> List[float]:
+    def __repr__(self) -> str:
+        return (
+            f"WLStatistics(n_scales={self.n_scales}, device={self.device}, "
+            f"dtype={self.dtype}, pixel_arcmin={self.pixel_arcmin})"
+        )
+
+    def get_scale_resolutions(self) -> list[float]:
         """Get effective resolution of each scale in arcminutes."""
         return self.starlet.get_scale_resolution(self.pixel_arcmin)
 
@@ -84,7 +90,7 @@ class WLStatistics:
         return image.ndim == 3
 
     def _broadcast_noise_sigma(
-        self, noise_sigma: Union[float, torch.Tensor], image: torch.Tensor, is_batched: bool
+        self, noise_sigma: float | torch.Tensor, image: torch.Tensor, is_batched: bool
     ) -> torch.Tensor:
         """
         Broadcast noise_sigma to match image shape.
@@ -131,8 +137,8 @@ class WLStatistics:
                 raise ValueError(f"Invalid noise_sigma shape: {noise_sigma.shape}")
 
     def _broadcast_mask(
-        self, mask: Optional[torch.Tensor], image: torch.Tensor, is_batched: bool
-    ) -> Optional[torch.Tensor]:
+        self, mask: torch.Tensor | None, image: torch.Tensor, is_batched: bool
+    ) -> torch.Tensor | None:
         """
         Broadcast mask to match image shape.
 
@@ -147,13 +153,13 @@ class WLStatistics:
         if mask is None:
             return None
 
-        mask = mask.to(self.device)
+        mask = mask.to(self.device, dtype=self.dtype)
 
         if is_batched:
             # Image is (B, H, W)
             if mask.ndim == 2:
                 # mask is (H, W): broadcast to all batch items
-                return mask.unsqueeze(0).expand(image.shape[0], -1, -1)
+                return mask.unsqueeze(0).expand(image.shape[0], -1, -1).clone()
             elif mask.ndim == 3:
                 # mask is (B, H, W): already correct shape
                 if mask.shape[0] != image.shape[0]:
@@ -177,9 +183,9 @@ class WLStatistics:
     def compute_wavelet_transform(
         self,
         image: torch.Tensor,
-        noise_sigma: Union[float, torch.Tensor],
-        mask: Optional[torch.Tensor] = None,
-    ) -> Dict[str, torch.Tensor]:
+        noise_sigma: float | torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
         """
         Compute wavelet transform and SNR for an image or batch of images.
 
@@ -247,10 +253,10 @@ class WLStatistics:
         min_snr: float = -2.0,
         max_snr: float = 6.0,
         n_bins: int = 31,
-        mask: Optional[torch.Tensor] = None,
+        mask: torch.Tensor | None = None,
         verbose: bool = False,
         clamp_overflow: bool = False,
-    ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, list[torch.Tensor]]:
         """
         Compute histogram of peak counts at all wavelet scales.
 
@@ -272,6 +278,9 @@ class WLStatistics:
         if self.snr_coeffs is None:
             raise RuntimeError("Must call compute_wavelet_transform first")
 
+        if min_snr >= max_snr:
+            raise ValueError(f"min_snr ({min_snr}) must be less than max_snr ({max_snr})")
+
         # Check if we're processing a batch
         is_batched = self.snr_coeffs.ndim == 4
 
@@ -279,9 +288,9 @@ class WLStatistics:
         bins = torch.linspace(min_snr, max_snr, n_bins + 1, device=self.device)
         bin_centers = 0.5 * (bins[:-1] + bins[1:])
 
-        peak_counts_list = []
-        peak_positions_list = []
-        peak_heights_list = []
+        peak_counts_list: list[Any] = []
+        peak_positions_list: list[Any] = []
+        peak_heights_list: list[Any] = []
 
         for scale_idx in range(self.n_scales):
             if is_batched:
@@ -409,11 +418,11 @@ class WLStatistics:
     def compute_wavelet_l1_norms(
         self,
         n_bins: int = 40,
-        mask: Optional[torch.Tensor] = None,
-        min_snr: Optional[float] = None,
-        max_snr: Optional[float] = None,
+        mask: torch.Tensor | None = None,
+        min_snr: float | None = None,
+        max_snr: float | None = None,
         clamp_overflow: bool = False,
-    ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+    ) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
         """
         Compute L1-norm as a function of SNR threshold for each scale.
 
@@ -437,6 +446,9 @@ class WLStatistics:
         if self.snr_coeffs is None:
             raise RuntimeError("Must call compute_wavelet_transform first")
 
+        if min_snr is not None and max_snr is not None and min_snr >= max_snr:
+            raise ValueError(f"min_snr ({min_snr}) must be less than max_snr ({max_snr})")
+
         # Check if we're processing a batch
         is_batched = self.snr_coeffs.ndim == 4
 
@@ -459,10 +471,10 @@ class WLStatistics:
                         mask_expanded = mask
 
                     # Collect all valid SNR values across batch
-                    snr_all_valid = []
+                    snr_valid_parts: list[torch.Tensor] = []
                     for b in range(batch_size):
-                        snr_all_valid.append(snr_scale[b][mask_expanded[b] != 0])
-                    snr_all_valid = torch.cat(snr_all_valid)
+                        snr_valid_parts.append(snr_scale[b][mask_expanded[b] != 0])
+                    snr_all_valid = torch.cat(snr_valid_parts)
                 else:
                     snr_all_valid = snr_scale.flatten()
 
@@ -562,21 +574,16 @@ class WLStatistics:
 
                 if clamp_overflow:
                     bin_indices = torch.clamp(bin_indices, 1, n_bins)
-                    l1_per_bin = torch.zeros(n_bins, device=self.device)
-                    for bin_idx in range(1, n_bins + 1):
-                        mask_bin = bin_indices == bin_idx
-                        if mask_bin.any():
-                            l1_per_bin[bin_idx - 1] = torch.abs(snr_masked[mask_bin]).sum()
+                    valid_bin_indices = bin_indices - 1
+                    l1_per_bin = torch.zeros(n_bins, dtype=snr_masked.dtype, device=self.device)
+                    l1_per_bin.scatter_add_(0, valid_bin_indices, torch.abs(snr_masked))
                 else:
                     valid_mask = (bin_indices >= 1) & (bin_indices <= n_bins)
-                    l1_per_bin = torch.zeros(n_bins, device=self.device)
+                    l1_per_bin = torch.zeros(n_bins, dtype=snr_masked.dtype, device=self.device)
                     if valid_mask.any():
-                        bin_indices_valid = bin_indices[valid_mask]
-                        snr_valid = snr_masked[valid_mask]
-                        for bin_idx in range(1, n_bins + 1):
-                            mask_bin = bin_indices_valid == bin_idx
-                            if mask_bin.any():
-                                l1_per_bin[bin_idx - 1] = torch.abs(snr_valid[mask_bin]).sum()
+                        valid_bin_indices = bin_indices[valid_mask] - 1
+                        valid_snr = snr_masked[valid_mask]
+                        l1_per_bin.scatter_add_(0, valid_bin_indices, torch.abs(valid_snr))
 
                 bins_list.append(bin_centers)
                 l1_norms_list.append(l1_per_bin)
@@ -590,14 +597,14 @@ class WLStatistics:
     def compute_mono_scale_peaks(
         self,
         image: torch.Tensor,
-        noise_sigma: Union[float, torch.Tensor],
+        noise_sigma: float | torch.Tensor,
         smoothing_sigma: float = 2.0,
         min_snr: float = -2.0,
         max_snr: float = 6.0,
         n_bins: int = 31,
-        mask: Optional[torch.Tensor] = None,
+        mask: torch.Tensor | None = None,
         clamp_overflow: bool = False,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Compute mono-scale peak counts with Gaussian smoothing.
 
@@ -619,6 +626,9 @@ class WLStatistics:
         """
         image = image.to(self.device, dtype=self.dtype)
         is_batched = self._is_batched(image)
+
+        if min_snr >= max_snr:
+            raise ValueError(f"min_snr ({min_snr}) must be less than max_snr ({max_snr})")
 
         bins = torch.linspace(min_snr, max_snr, n_bins + 1, device=self.device)
 
@@ -655,7 +665,8 @@ class WLStatistics:
 
                 # Get noise for this sample
                 if noise_sigma_scalar is None:
-                    # Per-sample noise map
+                    # Per-sample noise map (noise_sigma is guaranteed Tensor here)
+                    assert isinstance(noise_sigma, torch.Tensor)
                     noise_b = noise_sigma[b]
                     if mask_b is not None:
                         noise_scalar_b = noise_b[mask_b != 0].mean().item()
@@ -710,19 +721,19 @@ class WLStatistics:
     def compute_all_statistics(
         self,
         image: torch.Tensor,
-        noise_sigma: Union[float, torch.Tensor],
-        mask: Optional[torch.Tensor] = None,
+        noise_sigma: float | torch.Tensor,
+        mask: torch.Tensor | None = None,
         min_snr: float = -2.0,
         max_snr: float = 6.0,
         n_bins: int = 31,
         l1_nbins: int = 40,
-        l1_min_snr: Optional[float] = None,
-        l1_max_snr: Optional[float] = None,
+        l1_min_snr: float | None = None,
+        l1_max_snr: float | None = None,
         compute_mono: bool = True,
         mono_smoothing_sigma: float = 2.0,
         verbose: bool = False,
         clamp_overflow: bool = False,
-    ) -> Dict[str, any]:
+    ) -> dict[str, Any]:
         """
         Compute all weak lensing statistics in one call.
 
@@ -758,7 +769,14 @@ class WLStatistics:
                 - 'wavelet_l1_norms': list of (l1_nbins,) per scale
                 - 'mono_peak_counts': (n_bins,) if compute_mono=True
         """
-        results = {}
+        # Canonicalize inputs at entry point
+        image = image.to(self.device, dtype=self.dtype)
+        if isinstance(noise_sigma, torch.Tensor):
+            noise_sigma = noise_sigma.to(self.device, dtype=self.dtype)
+        if mask is not None:
+            mask = mask.to(self.device, dtype=self.dtype)
+
+        results: dict[str, Any] = {}
 
         # Use peak SNR ranges for L1-norm if not separately specified
         l1_min_snr_use = l1_min_snr if l1_min_snr is not None else min_snr
@@ -820,7 +838,7 @@ class WLStatistics:
             results["mono_peak_counts"] = mono_counts
 
         if verbose:
-            print("✓ All statistics computed!")
+            print("All statistics computed!")
 
         return results
 
@@ -863,7 +881,7 @@ def test_statistics():
         n_peaks = counts.sum().item()
         print(f"  Scale {i+1}: {int(n_peaks)} peaks")
 
-    print("\n✓ All tests passed!")
+    print("\nAll tests passed!")
 
 
 if __name__ == "__main__":

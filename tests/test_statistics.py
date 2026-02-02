@@ -37,6 +37,13 @@ class TestWLStatistics:
         assert stats.pixel_arcmin == 0.5
         assert stats.starlet is not None
 
+    def test_repr(self, device):
+        """Test __repr__ output."""
+        stats = WLStatistics(n_scales=5, device=device, pixel_arcmin=0.5)
+        r = repr(stats)
+        assert "n_scales=5" in r
+        assert "pixel_arcmin=0.5" in r
+
     def test_get_scale_resolutions(self, stats):
         """Test scale resolution calculation."""
         resolutions = stats.get_scale_resolutions()
@@ -185,6 +192,46 @@ class TestWLStatistics:
         if torch.cuda.is_available():
             stats_cpu.to(torch.device("cuda"))
             assert stats_cpu.device.type == "cuda"
+
+
+class TestDtypePreservation:
+    """Test that input dtype is preserved in output."""
+
+    @pytest.fixture
+    def device(self):
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    def test_float32_preserved(self, device):
+        """float32 inputs should produce float32 wavelet coefficients."""
+        stats = WLStatistics(n_scales=3, device=device, dtype=torch.float32)
+        image = torch.randn(64, 64, device=device, dtype=torch.float32)
+        sigma = torch.ones(64, 64, device=device, dtype=torch.float32) * 0.1
+
+        results = stats.compute_wavelet_transform(image, sigma)
+        assert results["wavelet_coeffs"].dtype == torch.float32
+        assert results["noise_levels"].dtype == torch.float32
+        assert results["snr"].dtype == torch.float32
+
+    def test_float64_preserved(self, device):
+        """float64 inputs should produce float64 wavelet coefficients."""
+        stats = WLStatistics(n_scales=3, device=device, dtype=torch.float64)
+        image = torch.randn(64, 64, device=device, dtype=torch.float64)
+        sigma = torch.ones(64, 64, device=device, dtype=torch.float64) * 0.1
+
+        results = stats.compute_wavelet_transform(image, sigma)
+        assert results["wavelet_coeffs"].dtype == torch.float64
+        assert results["noise_levels"].dtype == torch.float64
+        assert results["snr"].dtype == torch.float64
+
+    def test_no_silent_upcasting(self, device):
+        """float32 stats should not silently upcast to float64."""
+        stats = WLStatistics(n_scales=3, device=device, dtype=torch.float32)
+        image = torch.randn(64, 64, device=device, dtype=torch.float32)
+        sigma = torch.ones(64, 64, device=device, dtype=torch.float32) * 0.1
+
+        results = stats.compute_all_statistics(image, sigma, compute_mono=True, verbose=False)
+        # Wavelet coefficients should stay float32
+        assert results["wavelet_coeffs"].dtype == torch.float32
 
 
 if __name__ == "__main__":

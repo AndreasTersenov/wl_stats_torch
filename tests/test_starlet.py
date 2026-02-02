@@ -28,6 +28,13 @@ class TestStarlet2D:
         assert starlet.device == device
         assert len(starlet.convs) == 4  # n_scales - 1
 
+    def test_repr(self, device):
+        """Test __repr__ output."""
+        starlet = Starlet2D(n_scales=5, device=device)
+        r = repr(starlet)
+        assert "n_scales=5" in r
+        assert "generation=2" in r
+
     def test_invalid_n_scales(self, device):
         """Test that invalid n_scales raises error."""
         with pytest.raises(ValueError):
@@ -140,6 +147,59 @@ class TestStarlet2D:
 
             coeffs_gpu = starlet(image_gpu)
             assert coeffs_gpu.device.type == "cuda"
+
+    def test_impulse_cache(self, device):
+        """Test that impulse response caching works."""
+        starlet = Starlet2D(n_scales=3, device=device)
+        noise_sigma = torch.ones(64, 64, device=device) * 0.1
+
+        # First call should populate cache
+        noise_levels_1 = starlet.get_noise_levels(noise_sigma)
+        assert len(starlet._impulse_cache) == 1
+
+        # Second call should use cache (same shape)
+        noise_levels_2 = starlet.get_noise_levels(noise_sigma)
+        assert len(starlet._impulse_cache) == 1
+
+        # Results should be identical
+        assert torch.allclose(noise_levels_1, noise_levels_2)
+
+        # Different shape should create new cache entry
+        noise_sigma_big = torch.ones(128, 128, device=device) * 0.1
+        starlet.get_noise_levels(noise_sigma_big)
+        assert len(starlet._impulse_cache) == 2
+
+
+class TestDtypePreservation:
+    """Test that dtype is preserved through the starlet pipeline."""
+
+    @pytest.fixture
+    def device(self):
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    def test_float32_preserved(self, device):
+        """float32 inputs should produce float32 outputs."""
+        starlet = Starlet2D(n_scales=3, device=device, dtype=torch.float32)
+        image = torch.randn(1, 1, 64, 64, device=device, dtype=torch.float32)
+
+        coeffs = starlet(image)
+        assert coeffs.dtype == torch.float32
+
+    def test_float64_preserved(self, device):
+        """float64 inputs should produce float64 outputs."""
+        starlet = Starlet2D(n_scales=3, device=device, dtype=torch.float64)
+        image = torch.randn(1, 1, 64, 64, device=device, dtype=torch.float64)
+
+        coeffs = starlet(image)
+        assert coeffs.dtype == torch.float64
+
+    def test_noise_levels_dtype(self, device):
+        """Noise levels should preserve dtype."""
+        for dtype in [torch.float32, torch.float64]:
+            starlet = Starlet2D(n_scales=3, device=device, dtype=dtype)
+            noise_sigma = torch.ones(64, 64, device=device, dtype=dtype) * 0.1
+            noise_levels = starlet.get_noise_levels(noise_sigma)
+            assert noise_levels.dtype == dtype
 
 
 if __name__ == "__main__":

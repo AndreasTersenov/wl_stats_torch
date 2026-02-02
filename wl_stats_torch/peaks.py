@@ -6,19 +6,48 @@ A peak is defined as a local maximum - a pixel with a value greater than
 all of its 8 neighbors.
 """
 
-from typing import List, Optional, Tuple
+from typing import NamedTuple
 
 import torch
 import torch.nn.functional as F
 
+# 3-sigma on each side of the Gaussian kernel center
+_GAUSSIAN_KERNEL_WIDTH_FACTOR = 6
+
+
+class PeakResult(NamedTuple):
+    """Result of 2D peak detection.
+
+    Attributes:
+        positions: (N, 2) peak coordinates as (row, col)
+        heights: (N,) peak values
+    """
+
+    positions: torch.Tensor
+    heights: torch.Tensor
+
+
+class MonoScalePeakResult(NamedTuple):
+    """Result of mono-scale peak detection with smoothing.
+
+    Attributes:
+        bin_centers: SNR bin centers
+        counts: Peak count histogram
+        peaks: PeakResult with positions and heights
+    """
+
+    bin_centers: torch.Tensor
+    counts: torch.Tensor
+    peaks: PeakResult
+
 
 def find_peaks_2d(
     image: torch.Tensor,
-    threshold: Optional[float] = None,
-    mask: Optional[torch.Tensor] = None,
+    threshold: float | None = None,
+    mask: torch.Tensor | None = None,
     include_border: bool = False,
     ordered: bool = True,
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> PeakResult:
     """
     Find local maxima (peaks) in a 2D image.
 
@@ -32,14 +61,12 @@ def find_peaks_2d(
         ordered: If True, return peaks sorted by height (descending)
 
     Returns:
-        Tuple of (positions, heights):
-            - positions: Tensor of shape (N, 2) with (row, col) coordinates
-            - heights: Tensor of shape (N,) with peak values
+        PeakResult with positions (N, 2) and heights (N,)
 
     Example:
         >>> image = torch.randn(128, 128)
-        >>> positions, heights = find_peaks_2d(image, threshold=2.0)
-        >>> print(f"Found {len(positions)} peaks above threshold")
+        >>> result = find_peaks_2d(image, threshold=2.0)
+        >>> print(f"Found {len(result.positions)} peaks above threshold")
     """
     # Handle input shapes
     if image.ndim == 4:
@@ -116,7 +143,7 @@ def find_peaks_2d(
 
     if peak_indices.numel() == 0:
         # No peaks found
-        return torch.empty((0, 2), device=device), torch.empty(0, device=device)
+        return PeakResult(torch.empty((0, 2), device=device), torch.empty(0, device=device))
 
     # Extract peak heights
     peak_heights = image[is_peak]
@@ -127,16 +154,16 @@ def find_peaks_2d(
         peak_indices = peak_indices[sorted_indices]
         peak_heights = peak_heights[sorted_indices]
 
-    return peak_indices, peak_heights
+    return PeakResult(peak_indices, peak_heights)
 
 
 def find_peaks_batch(
     images: torch.Tensor,
-    threshold: Optional[float] = None,
-    masks: Optional[torch.Tensor] = None,
+    threshold: float | None = None,
+    masks: torch.Tensor | None = None,
     include_border: bool = False,
     ordered: bool = True,
-) -> List[Tuple[torch.Tensor, torch.Tensor]]:
+) -> list[PeakResult]:
     """
     Find peaks in a batch of images (VECTORIZED VERSION).
 
@@ -151,7 +178,7 @@ def find_peaks_batch(
         ordered: If True, sort peaks by height
 
     Returns:
-        List of (positions, heights) tuples, one per image in batch
+        List of PeakResult, one per image in batch
     """
     if images.ndim == 3:
         images = images.unsqueeze(1)  # Add channel dimension: (B, 1, H, W)
@@ -223,7 +250,9 @@ def find_peaks_batch(
 
         if peak_indices.numel() == 0:
             # No peaks found
-            results.append((torch.empty((0, 2), device=device), torch.empty(0, device=device)))
+            results.append(
+                PeakResult(torch.empty((0, 2), device=device), torch.empty(0, device=device))
+            )
             continue
 
         # Extract peak heights: (N,)
@@ -235,7 +264,7 @@ def find_peaks_batch(
             peak_indices = peak_indices[sorted_indices]
             peak_heights = peak_heights[sorted_indices]
 
-        results.append((peak_indices, peak_heights))
+        results.append(PeakResult(peak_indices, peak_heights))
 
     return results
 
@@ -320,13 +349,13 @@ def mono_scale_peaks_smoothed(
     image: torch.Tensor,
     sigma_noise: float,
     smoothing_sigma: float = 2.0,
-    mask: Optional[torch.Tensor] = None,
-    bins: Optional[torch.Tensor] = None,
+    mask: torch.Tensor | None = None,
+    bins: torch.Tensor | None = None,
     min_snr: float = -2.0,
     max_snr: float = 6.0,
     n_bins: int = 31,
     clamp_overflow: bool = False,
-) -> Tuple[torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+) -> MonoScalePeakResult:
     """
     Compute mono-scale peak counts with Gaussian smoothing.
 
@@ -349,7 +378,7 @@ def mono_scale_peaks_smoothed(
                        False matches cosmostat/pycs behavior.
 
     Returns:
-        Tuple of (bin_centers, counts, (peak_positions, peak_heights))
+        MonoScalePeakResult with bin_centers, counts, and peaks
     """
     device = image.device
 
@@ -368,12 +397,12 @@ def mono_scale_peaks_smoothed(
         image = image.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
 
     # Create Gaussian kernel
-    kernel_size = int(6 * smoothing_sigma + 1)
+    kernel_size = int(_GAUSSIAN_KERNEL_WIDTH_FACTOR * smoothing_sigma + 1)
     if kernel_size % 2 == 0:
         kernel_size += 1
 
     # Create 1D Gaussian with same dtype as image
-    image_dtype = image.dtype if image.ndim == 4 else image.dtype
+    image_dtype = image.dtype
     x = torch.arange(kernel_size, dtype=image_dtype, device=device)
     x = x - kernel_size // 2
     gaussian_1d = torch.exp(-(x**2) / (2 * smoothing_sigma**2))
@@ -404,7 +433,7 @@ def mono_scale_peaks_smoothed(
         gaussian_squared = gaussian_2d**2
         noise_factor_squared = gaussian_squared.sum()
         smoothed_noise_sigma = sigma_noise_map[0, 0].item() * torch.sqrt(noise_factor_squared)
-        smoothed_noise_map = torch.full_like(image_smoothed, smoothed_noise_sigma)
+        smoothed_noise_map = torch.full_like(image_smoothed, smoothed_noise_sigma.item())
     else:
         # Proper variance propagation for non-uniform noise (matches pycs)
         # var(smoothed) = conv(variance_map, G^2)
@@ -432,7 +461,7 @@ def mono_scale_peaks_smoothed(
     snr_image = snr_image.squeeze(0).squeeze(0)  # Back to (H, W)
 
     # Find peaks
-    peak_positions, peak_heights = find_peaks_2d(
+    peak_result = find_peaks_2d(
         snr_image, threshold=None, mask=mask, include_border=False, ordered=True
     )
 
@@ -443,9 +472,9 @@ def mono_scale_peaks_smoothed(
     bin_centers = 0.5 * (bins[:-1] + bins[1:])
 
     # Compute histogram
-    counts = peaks_to_histogram(peak_heights, bins, clamp_overflow=clamp_overflow)
+    counts = peaks_to_histogram(peak_result.heights, bins, clamp_overflow=clamp_overflow)
 
-    return bin_centers, counts, (peak_positions, peak_heights)
+    return MonoScalePeakResult(bin_centers, counts, peak_result)
 
 
 def test_peaks():
@@ -470,25 +499,23 @@ def test_peaks():
     image += torch.randn_like(image) * 0.1
 
     # Find peaks
-    positions, heights = find_peaks_2d(image, threshold=2.0, ordered=True)
+    result = find_peaks_2d(image, threshold=2.0, ordered=True)
 
-    print(f"Found {len(positions)} peaks")
-    print(f"Peak positions: {positions[:5]}")
-    print(f"Peak heights: {heights[:5]}")
+    print(f"Found {len(result.positions)} peaks")
+    print(f"Peak positions: {result.positions[:5]}")
+    print(f"Peak heights: {result.heights[:5]}")
 
     # Test histogram
     bins = torch.linspace(0, 6, 31, device=device)
-    counts = peaks_to_histogram(heights, bins)
+    counts = peaks_to_histogram(result.heights, bins)
     print(f"Histogram shape: {counts.shape}")
 
     # Test mono-scale peaks
-    bin_centers, counts, (pos, hts) = mono_scale_peaks_smoothed(
-        image, sigma_noise=0.1, smoothing_sigma=2.0
-    )
-    print(f"Mono-scale: found {len(pos)} peaks")
-    print(f"Histogram bins: {len(bin_centers)}")
+    mono_result = mono_scale_peaks_smoothed(image, sigma_noise=0.1, smoothing_sigma=2.0)
+    print(f"Mono-scale: found {len(mono_result.peaks.positions)} peaks")
+    print(f"Histogram bins: {len(mono_result.bin_centers)}")
 
-    print("✓ All tests passed!")
+    print("All tests passed!")
 
 
 if __name__ == "__main__":

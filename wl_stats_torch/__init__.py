@@ -8,7 +8,7 @@ including wavelet peak counts and L1-norms.
 __version__ = "0.1.0"
 __author__ = "Andreas Tersenov"
 
-from .peaks import find_peaks_2d, find_peaks_batch
+from .peaks import MonoScalePeakResult, PeakResult, find_peaks_2d, find_peaks_batch
 from .starlet import Starlet2D
 from .statistics import WLStatistics
 
@@ -17,4 +17,6 @@ __all__ = [
     "find_peaks_2d",
     "find_peaks_batch",
     "WLStatistics",
+    "PeakResult",
+    "MonoScalePeakResult",
 ]
