@@ -179,6 +179,7 @@ class WLStatistics:
         image: torch.Tensor,
         noise_sigma: Union[float, torch.Tensor],
         mask: Optional[torch.Tensor] = None,
+        subtract_coarse_mean: bool = True,
     ) -> Dict[str, torch.Tensor]:
         """
         Compute wavelet transform and SNR for an image or batch of images.
@@ -187,6 +188,9 @@ class WLStatistics:
             image: Input convergence map(s), shape (H, W) or (B, H, W)
             noise_sigma: Noise standard deviation, scalar, (H, W), or (B, H, W)
             mask: Optional observation mask, None, (H, W), or (B, H, W)
+            subtract_coarse_mean: If True (default), subtract the spatial mean
+                from the coarse scale before computing SNR. This removes the
+                cosmologically uninformative DC component.
 
         Returns:
             Dictionary with keys:
@@ -218,6 +222,19 @@ class WLStatistics:
 
         # Compute wavelet transform
         wavelet_coeffs = self.starlet(image_4d, return_coarse=True)  # (B, n_scales, H, W)
+
+        # Subtract spatial mean from coarse scale
+        if subtract_coarse_mean:
+            coarse_idx = self.n_scales - 1
+            coarse = wavelet_coeffs[:, coarse_idx, :, :]  # (B, H, W)
+            if mask_4d is not None:
+                # Compute mean over unmasked pixels only (per batch element)
+                mask_2d = mask_4d[:, 0, :, :]  # (B, H, W)
+                n_valid = mask_2d.sum(dim=(-2, -1), keepdim=True).clamp(min=1)
+                coarse_mean = (coarse * mask_2d).sum(dim=(-2, -1), keepdim=True) / n_valid
+            else:
+                coarse_mean = coarse.mean(dim=(-2, -1), keepdim=True)  # (B, 1, 1)
+            wavelet_coeffs[:, coarse_idx, :, :] = coarse - coarse_mean
 
         # Compute noise levels
         noise_levels = self.starlet.get_noise_levels(
@@ -722,6 +739,7 @@ class WLStatistics:
         mono_smoothing_sigma: float = 2.0,
         verbose: bool = False,
         clamp_overflow: bool = False,
+        subtract_coarse_mean: bool = True,
     ) -> Dict[str, any]:
         """
         Compute all weak lensing statistics in one call.
@@ -744,6 +762,8 @@ class WLStatistics:
             clamp_overflow: If True, values outside SNR range are included in edge bins.
                           If False (default), values outside range are excluded.
                           False matches cosmostat/pycs behavior.
+            subtract_coarse_mean: If True (default), subtract the spatial mean
+                from the coarse scale before computing SNR.
 
         Returns:
             Dictionary with all computed statistics.
@@ -769,7 +789,9 @@ class WLStatistics:
             is_batched = self._is_batched(image)
             batch_info = f" (batch size {image.shape[0]})" if is_batched else ""
             print(f"Computing wavelet transform{batch_info}...")
-        wt_results = self.compute_wavelet_transform(image, noise_sigma, mask)
+        wt_results = self.compute_wavelet_transform(
+            image, noise_sigma, mask, subtract_coarse_mean=subtract_coarse_mean
+        )
         results.update(wt_results)
 
         # 2. Wavelet peak counts
