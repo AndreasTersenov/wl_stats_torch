@@ -10,10 +10,12 @@ __author__ = "Andreas Tersenov"
 
 from .peaks import find_peaks_2d, find_peaks_batch
 from .starlet import Starlet2D
+from .doth import DifferenceOfTopHats2D
 from .statistics import WLStatistics
 
 __all__ = [
     "Starlet2D",
+    "DifferenceOfTopHats2D",
     "find_peaks_2d",
     "find_peaks_batch",
     "WLStatistics",

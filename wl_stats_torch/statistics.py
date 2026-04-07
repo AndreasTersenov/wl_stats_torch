@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Tuple, Union
 import torch
 
 from .peaks import find_peaks_2d, find_peaks_batch, mono_scale_peaks_smoothed, peaks_to_histogram
+from .doth import DifferenceOfTopHats2D
 from .starlet import Starlet2D
 
 
@@ -41,6 +42,8 @@ class WLStatistics:
         device: Optional[torch.device] = None,
         pixel_arcmin: float = 1.0,
         dtype: torch.dtype = torch.float64,
+        wavelet_type: str = "starlet",
+        doth_base_radius: float = 1.0,
     ):
         """
         Initialize weak lensing statistics calculator.
@@ -50,6 +53,8 @@ class WLStatistics:
             device: torch device for computation. If None, auto-detects.
             pixel_arcmin: Pixel resolution in arcminutes
             dtype: Data type for computations. Default: torch.float64 to match NumPy.
+            wavelet_type: Wavelet transform family. Supported: "starlet", "doth".
+            doth_base_radius: Base smoothing radius in pixels for DoTH.
         """
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -58,9 +63,25 @@ class WLStatistics:
         self.device = device
         self.pixel_arcmin = pixel_arcmin
         self.dtype = dtype
+        self.wavelet_type = wavelet_type.lower()
+        self.doth_base_radius = doth_base_radius
 
-        # Initialize starlet transform
-        self.starlet = Starlet2D(n_scales=n_scales, device=device, dtype=dtype)
+        if self.wavelet_type == "starlet":
+            self.transform = Starlet2D(n_scales=n_scales, device=device, dtype=dtype)
+        elif self.wavelet_type == "doth":
+            self.transform = DifferenceOfTopHats2D(
+                n_scales=n_scales,
+                base_radius=doth_base_radius,
+                device=device,
+                dtype=dtype,
+            )
+        else:
+            raise ValueError(
+                f"Unsupported wavelet_type '{wavelet_type}'. Supported values: 'starlet', 'doth'"
+            )
+
+        # Backward-compatible alias used in external code/tests/docs
+        self.starlet = self.transform
 
         # Storage for computed results
         self.wavelet_coeffs = None
@@ -77,7 +98,7 @@ class WLStatistics:
 
     def get_scale_resolutions(self) -> List[float]:
         """Get effective resolution of each scale in arcminutes."""
-        return self.starlet.get_scale_resolution(self.pixel_arcmin)
+        return self.transform.get_scale_resolution(self.pixel_arcmin)
 
     def _is_batched(self, image: torch.Tensor) -> bool:
         """Check if input is batched (B, H, W) vs single (H, W)."""
@@ -221,7 +242,7 @@ class WLStatistics:
             mask_4d = mask.unsqueeze(0).unsqueeze(0) if mask is not None else None
 
         # Compute wavelet transform
-        wavelet_coeffs = self.starlet(image_4d, return_coarse=True)  # (B, n_scales, H, W)
+        wavelet_coeffs = self.transform(image_4d, return_coarse=True)  # (B, n_scales, H, W)
 
         # Subtract spatial mean from coarse scale
         if subtract_coarse_mean:
@@ -237,7 +258,7 @@ class WLStatistics:
             wavelet_coeffs[:, coarse_idx, :, :] = coarse - coarse_mean
 
         # Compute noise levels
-        noise_levels = self.starlet.get_noise_levels(
+        noise_levels = self.transform.get_noise_levels(
             noise_sigma_4d, mask=mask_4d
         )  # (B, n_scales, H, W)
 
@@ -430,6 +451,7 @@ class WLStatistics:
         min_snr: Optional[float] = None,
         max_snr: Optional[float] = None,
         clamp_overflow: bool = False,
+        l1_binning: str = "auto",
     ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
         """
         Compute L1-norm as a function of SNR threshold for each scale.
@@ -445,14 +467,39 @@ class WLStatistics:
             clamp_overflow: If True, values outside SNR range are included in edge bins.
                           If False (default), values outside range are excluded.
                           False matches cosmostat/pycs behavior.
+            l1_binning: Quantity used to bin L1 values:
+                - "snr": always bin by SNR values (legacy behavior)
+                - "coeff": bin by filtered wavelet/DoTH coefficients
+                - "auto" (default): bin by SNR, but if a scale has zero propagated
+                  noise (e.g. noise_sigma=0), fallback to coefficient binning.
 
         Returns:
             Tuple of (bins_list, l1_norms_list) where:
                 - bins_list: List of bin center tensors per scale
                 - l1_norms_list: List of L1-norm tensors per scale, shape (n_bins,) or (B, n_bins)
         """
-        if self.snr_coeffs is None:
+        if self.snr_coeffs is None or self.wavelet_coeffs is None:
             raise RuntimeError("Must call compute_wavelet_transform first")
+
+        l1_binning = l1_binning.lower()
+        if l1_binning not in ("snr", "coeff", "auto"):
+            raise ValueError(
+                f"Unsupported l1_binning '{l1_binning}'. Supported values: 'snr', 'coeff', 'auto'"
+            )
+
+        def select_binning_values(
+            coeff_values: torch.Tensor,
+            snr_values: torch.Tensor,
+            noise_values: Optional[torch.Tensor],
+        ) -> torch.Tensor:
+            if l1_binning == "coeff":
+                return coeff_values
+            if l1_binning == "snr":
+                return snr_values
+            # auto: use coefficient-space binning for noiseless scales
+            if noise_values is not None and noise_values.numel() > 0 and torch.all(noise_values == 0):
+                return coeff_values
+            return snr_values
 
         # Check if we're processing a batch
         is_batched = self.snr_coeffs.ndim == 4
@@ -464,41 +511,20 @@ class WLStatistics:
             if is_batched:
                 # Batched processing: snr_scale is (B, H, W)
                 snr_scale = self.snr_coeffs[:, scale_idx, :, :]
+                coeff_scale = self.wavelet_coeffs[:, scale_idx, :, :]
+                noise_scale = self.noise_levels[:, scale_idx, :, :] if self.noise_levels is not None else None
                 batch_size = snr_scale.shape[0]
 
                 # Determine SNR range across entire batch
-                if mask is not None:
-                    # Apply mask to get valid values
-                    if mask.ndim == 2:
-                        # Shared mask: broadcast to batch
-                        mask_expanded = mask.unsqueeze(0).expand(batch_size, -1, -1)
-                    else:
-                        mask_expanded = mask
-
-                    # Collect all valid SNR values across batch
-                    snr_all_valid = []
-                    for b in range(batch_size):
-                        snr_all_valid.append(snr_scale[b][mask_expanded[b] != 0])
-                    snr_all_valid = torch.cat(snr_all_valid)
-                else:
-                    snr_all_valid = snr_scale.flatten()
-
-                current_min = min_snr if min_snr is not None else snr_all_valid.min().item()
-                current_max = max_snr if max_snr is not None else snr_all_valid.max().item()
-
-                # Create bins (shared across batch)
-                thresholds = torch.linspace(
-                    current_min, current_max, n_bins + 1, device=self.device
-                )
-                bin_centers = 0.5 * (thresholds[:-1] + thresholds[1:])
-
                 # Vectorized processing for all images in batch
-                # Collect all SNR values with batch indices
-                all_snr_values = []
+                # Collect all selected binning values with batch indices
+                all_bin_values = []
                 batch_indices = []
 
                 for b in range(batch_size):
                     snr_img = snr_scale[b]
+                    coeff_img = coeff_scale[b]
+                    noise_img = noise_scale[b] if noise_scale is not None else None
 
                     # Apply mask if provided
                     if mask is not None:
@@ -506,24 +532,40 @@ class WLStatistics:
                             mask_img = mask
                         else:
                             mask_img = mask[b]
-                        snr_masked = snr_img[mask_img != 0]
+                        valid_pixels = mask_img != 0
+                        snr_masked = snr_img[valid_pixels]
+                        coeff_masked = coeff_img[valid_pixels]
+                        noise_masked = noise_img[valid_pixels] if noise_img is not None else None
                     else:
                         snr_masked = snr_img.flatten()
+                        coeff_masked = coeff_img.flatten()
+                        noise_masked = noise_img.flatten() if noise_img is not None else None
 
-                    if snr_masked.numel() > 0:
-                        all_snr_values.append(snr_masked)
+                    bin_values = select_binning_values(coeff_masked, snr_masked, noise_masked)
+
+                    if bin_values.numel() > 0:
+                        all_bin_values.append(bin_values)
                         batch_indices.append(
-                            torch.full((len(snr_masked),), b, dtype=torch.long, device=self.device)
+                            torch.full((len(bin_values),), b, dtype=torch.long, device=self.device)
                         )
 
                 # Vectorized L1-norm computation
-                if len(all_snr_values) > 0:
-                    # Concatenate all SNR values and batch indices
-                    all_snr_cat = torch.cat(all_snr_values)
+                if len(all_bin_values) > 0:
+                    # Concatenate all values and batch indices
+                    all_bin_cat = torch.cat(all_bin_values)
                     batch_indices_cat = torch.cat(batch_indices)
 
-                    # Digitize all SNR values at once
-                    bin_indices = torch.searchsorted(thresholds, all_snr_cat, right=False)
+                    current_min = min_snr if min_snr is not None else all_bin_cat.min().item()
+                    current_max = max_snr if max_snr is not None else all_bin_cat.max().item()
+
+                    # Create bins (shared across batch)
+                    thresholds = torch.linspace(
+                        current_min, current_max, n_bins + 1, device=self.device
+                    )
+                    bin_centers = 0.5 * (thresholds[:-1] + thresholds[1:])
+
+                    # Digitize all values at once
+                    bin_indices = torch.searchsorted(thresholds, all_bin_cat, right=False)
 
                     if clamp_overflow:
                         # Clip to valid range [1, n_bins]
@@ -536,18 +578,24 @@ class WLStatistics:
                     # Filter to valid bins
                     valid_bin_indices = bin_indices[valid_mask] - 1  # Shift to 0-indexed
                     valid_batch_indices = batch_indices_cat[valid_mask]
-                    valid_snr_values = all_snr_cat[valid_mask]
+                    valid_bin_values = all_bin_cat[valid_mask]
 
                     # Compute L1 norms: sum of absolute values per (batch, bin) pair
                     # Use scatter_add to accumulate sums efficiently
                     linear_indices = valid_batch_indices * n_bins + valid_bin_indices
                     l1_batch_flat = torch.zeros(
-                        batch_size * n_bins, dtype=valid_snr_values.dtype, device=self.device
+                        batch_size * n_bins, dtype=valid_bin_values.dtype, device=self.device
                     )
-                    l1_batch_flat.scatter_add_(0, linear_indices, torch.abs(valid_snr_values))
+                    l1_batch_flat.scatter_add_(0, linear_indices, torch.abs(valid_bin_values))
                     l1_batch = l1_batch_flat.reshape(batch_size, n_bins)
                 else:
                     # No valid SNR values
+                    current_min = min_snr if min_snr is not None else -1.0
+                    current_max = max_snr if max_snr is not None else 1.0
+                    thresholds = torch.linspace(
+                        current_min, current_max, n_bins + 1, device=self.device
+                    )
+                    bin_centers = 0.5 * (thresholds[:-1] + thresholds[1:])
                     l1_batch = torch.zeros(batch_size, n_bins, device=self.device)
 
                 bins_list.append(bin_centers)
@@ -556,17 +604,30 @@ class WLStatistics:
             else:
                 # Single image processing: snr_scale is (H, W)
                 snr_scale = self.snr_coeffs[scale_idx]
+                coeff_scale = self.wavelet_coeffs[scale_idx]
+                noise_scale = self.noise_levels[scale_idx] if self.noise_levels is not None else None
 
                 # Apply mask if provided
                 if mask is not None:
                     mask_2d = mask.to(self.device)
-                    snr_masked = snr_scale[mask_2d != 0]
+                    valid_pixels = mask_2d != 0
+                    snr_masked = snr_scale[valid_pixels]
+                    coeff_masked = coeff_scale[valid_pixels]
+                    noise_masked = noise_scale[valid_pixels] if noise_scale is not None else None
                 else:
                     snr_masked = snr_scale.flatten()
+                    coeff_masked = coeff_scale.flatten()
+                    noise_masked = noise_scale.flatten() if noise_scale is not None else None
+
+                bin_values = select_binning_values(coeff_masked, snr_masked, noise_masked)
 
                 # Determine SNR range
-                current_min = min_snr if min_snr is not None else snr_masked.min().item()
-                current_max = max_snr if max_snr is not None else snr_masked.max().item()
+                if bin_values.numel() > 0:
+                    current_min = min_snr if min_snr is not None else bin_values.min().item()
+                    current_max = max_snr if max_snr is not None else bin_values.max().item()
+                else:
+                    current_min = min_snr if min_snr is not None else -1.0
+                    current_max = max_snr if max_snr is not None else 1.0
 
                 # Create bins
                 thresholds = torch.linspace(
@@ -574,8 +635,8 @@ class WLStatistics:
                 )
                 bin_centers = 0.5 * (thresholds[:-1] + thresholds[1:])
 
-                # Digitize SNR values
-                bin_indices = torch.searchsorted(thresholds, snr_masked, right=False)
+                # Digitize selected values
+                bin_indices = torch.searchsorted(thresholds, bin_values, right=False)
 
                 if clamp_overflow:
                     bin_indices = torch.clamp(bin_indices, 1, n_bins)
@@ -583,17 +644,17 @@ class WLStatistics:
                     for bin_idx in range(1, n_bins + 1):
                         mask_bin = bin_indices == bin_idx
                         if mask_bin.any():
-                            l1_per_bin[bin_idx - 1] = torch.abs(snr_masked[mask_bin]).sum()
+                            l1_per_bin[bin_idx - 1] = torch.abs(bin_values[mask_bin]).sum()
                 else:
                     valid_mask = (bin_indices >= 1) & (bin_indices <= n_bins)
                     l1_per_bin = torch.zeros(n_bins, device=self.device)
                     if valid_mask.any():
                         bin_indices_valid = bin_indices[valid_mask]
-                        snr_valid = snr_masked[valid_mask]
+                        values_valid = bin_values[valid_mask]
                         for bin_idx in range(1, n_bins + 1):
                             mask_bin = bin_indices_valid == bin_idx
                             if mask_bin.any():
-                                l1_per_bin[bin_idx - 1] = torch.abs(snr_valid[mask_bin]).sum()
+                                l1_per_bin[bin_idx - 1] = torch.abs(values_valid[mask_bin]).sum()
 
                 bins_list.append(bin_centers)
                 l1_norms_list.append(l1_per_bin)
@@ -735,6 +796,7 @@ class WLStatistics:
         l1_nbins: int = 40,
         l1_min_snr: Optional[float] = None,
         l1_max_snr: Optional[float] = None,
+        l1_binning: str = "auto",
         compute_mono: bool = True,
         mono_smoothing_sigma: float = 2.0,
         verbose: bool = False,
@@ -756,6 +818,8 @@ class WLStatistics:
             l1_nbins: Number of bins for L1-norm
             l1_min_snr: Minimum SNR for L1-norm (if None, uses min_snr)
             l1_max_snr: Maximum SNR for L1-norm (if None, uses max_snr)
+            l1_binning: Quantity used to bin L1 values:
+                        "snr", "coeff", or "auto" (default).
             compute_mono: Whether to compute mono-scale peaks
             mono_smoothing_sigma: Smoothing scale for mono-scale peaks
             verbose: Print progress information
@@ -819,6 +883,7 @@ class WLStatistics:
             min_snr=l1_min_snr_use,
             max_snr=l1_max_snr_use,
             clamp_overflow=clamp_overflow,
+            l1_binning=l1_binning,
         )
         results["l1_bins"] = l1_bins
         results["wavelet_l1_norms"] = l1_norms
@@ -849,7 +914,8 @@ class WLStatistics:
     def to(self, device: torch.device):
         """Move all components to specified device."""
         self.device = device
-        self.starlet.to(device)
+        self.transform.to(device)
+        self.starlet = self.transform
         return self
 
 

@@ -15,7 +15,7 @@ GPU-accelerated weak lensing summary statistics using PyTorch.
 **wl-stats-torch** computes weak lensing summary statistics commonly used in cosmological analyses:
 
 - **Mono-scale peak counts** - Peak statistics on smoothed convergence maps
-- **Wavelet (Starlet) peak counts** - Multi-scale peak detection using the starlet transform
+- **Wavelet peak counts** - Multi-scale peak detection using Starlet or DoTH transforms
 - **Wavelet L1-norm** - Sparsity measure across wavelet scales
 
 This package provides a fast, pure-Python alternative to the C++-dependent [CosmoStat](https://github.com/CosmoStat) implementation, with full GPU support via PyTorch.
@@ -111,6 +111,36 @@ wavelet_l1 = torch.stack(results['wavelet_l1_norms'])        # (6, 128, 100)
 
 Batch processing delivers **12-19x speedup** on NVIDIA A100 compared to sequential processing.
 
+### Select Wavelet Family (Starlet or DoTH)
+
+Use `wavelet_type="doth"` to switch from Starlet to a difference-of-top-hats transform:
+
+```python
+stats = WLStatistics(
+    n_scales=5,
+    device=device,
+    wavelet_type="doth",      # "starlet" (default) or "doth"
+    doth_base_radius=1.0,     # base radius in pixels for DoTH
+)
+
+results = stats.compute_all_statistics(kappa_map, sigma_map)
+```
+
+DoTH uses WALE-style details per scale:
+`detail_j = smooth(2R_j) - smooth(R_j)` with dyadic radii.
+The output keeps the same `n_scales` channel convention as Starlet
+(detail scales plus a final coarse channel).
+
+### L1 Binning in Noiseless Cases
+
+By default, wavelet L1 histograms use `l1_binning="auto"`:
+- if propagated noise is non-zero, bins are in SNR space (standard behavior),
+- if a scale is noiseless (`noise_sigma=0`), bins fallback to filtered-coefficient space.
+
+You can force behavior explicitly with:
+- `l1_binning="snr"` (legacy pure SNR binning),
+- `l1_binning="coeff"` (always coefficient-space binning).
+
 ## Components
 
 ### Starlet Transform
@@ -122,6 +152,15 @@ from wl_stats_torch.starlet import Starlet2D
 
 starlet = Starlet2D(n_scales=5)
 wavelet_coeffs = starlet(image)  # Returns (n_scales, H, W)
+```
+
+### Difference-of-Top-Hats Transform
+
+```python
+from wl_stats_torch.doth import DifferenceOfTopHats2D
+
+doth = DifferenceOfTopHats2D(n_scales=5, base_radius=1.0)
+coeffs = doth(image)  # Returns (1, n_scales, H, W)
 ```
 
 ### Peak Detection

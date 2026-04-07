@@ -13,7 +13,9 @@ stats = WLStatistics(
     n_scales=5,              # Number of wavelet scales
     device=None,             # torch.device or None for auto-detect
     pixel_arcmin=1.0,        # Pixel resolution in arcminutes
-    dtype=torch.float64      # Data type for computations (default: float64)
+    dtype=torch.float64,     # Data type for computations (default: float64)
+    wavelet_type="starlet",  # "starlet" (default) or "doth"
+    doth_base_radius=1.0     # DoTH base smoothing radius in pixels
 )
 ```
 
@@ -36,6 +38,7 @@ results = stats.compute_all_statistics(
     l1_nbins=40,            # Number of bins for L1-norm
     l1_min_snr=None,        # Minimum SNR for L1-norm (uses min_snr if None)
     l1_max_snr=None,        # Maximum SNR for L1-norm (uses max_snr if None)
+    l1_binning="auto",      # "auto" (default), "snr", or "coeff"
     compute_mono=True,       # Whether to compute mono-scale peaks
     mono_smoothing_sigma=2.0, # Smoothing for mono-scale
     verbose=False,           # Print progress
@@ -57,6 +60,15 @@ results = stats.compute_all_statistics(
   - `None`: no masking
   - Map `(H, W)`: same mask for all images in batch
   - Batch map `(B, H, W)`: different per image
+- `wavelet_type`: transform family
+  - `"starlet"`: B3-spline a trous transform (default)
+  - `"doth"`: difference-of-top-hats in Fourier space
+- `doth_base_radius`: base radius in pixels used when `wavelet_type="doth"`
+- `l1_binning`: quantity used to bin wavelet L1 norms
+  - `"snr"`: bin by SNR only (legacy behavior)
+  - `"coeff"`: bin directly by filtered coefficients
+  - `"auto"` (default): bin by SNR, but for scales with zero propagated noise
+    (e.g. `noise_sigma=0`) fallback to coefficient binning
 
 **Returns:** Dictionary with keys (shapes depend on input):
 
@@ -248,6 +260,58 @@ resolutions = starlet.get_scale_resolution(
 ```
 
 **Returns:** List of resolutions for each scale (including coarse)
+
+### DifferenceOfTopHats2D
+
+2D difference-of-top-hats transform in Fourier space.
+
+```python
+from wl_stats_torch.doth import DifferenceOfTopHats2D
+
+doth = DifferenceOfTopHats2D(
+    n_scales=5,      # total channels including final coarse channel
+    base_radius=1.0, # base smoothing radius in pixels
+    device=None,
+    dtype=torch.float32
+)
+```
+
+DoTH details follow WALE-style convention:
+`detail_j = smooth(2R_j) - smooth(R_j)` with dyadic radii
+`R_j = base_radius * 2**j`.
+
+#### Methods
+
+##### `forward`
+
+```python
+coeffs = doth(
+    x,                   # (H, W), (1, H, W), or (B, 1, H, W)
+    return_coarse=True,  # include final coarse channel
+    return_dict=False
+)
+```
+
+**Returns:** `(B, n_scales, H, W)` (or `(B, n_scales-1, H, W)` if `return_coarse=False`)
+
+##### `get_noise_levels`
+
+```python
+noise_levels = doth.get_noise_levels(
+    noise_sigma,  # (H, W), (B, H, W), or (B, 1, H, W)
+    mask=None
+)
+```
+
+**Returns:** `(B, n_scales, H, W)`
+
+##### `get_scale_resolution`
+
+```python
+resolutions = doth.get_scale_resolution(pixel_size_arcmin=1.0)
+```
+
+**Returns:** List of approximate per-scale resolutions in arcminutes
 
 ## Peak Detection Functions
 

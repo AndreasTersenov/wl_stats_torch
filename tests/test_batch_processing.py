@@ -327,6 +327,27 @@ class TestBatchProcessing:
         # Results should maintain input dtype
         assert results32["wavelet_coeffs"].dtype in [torch.float32, torch.float64]
 
+    def test_batch_processing_doth(self, device):
+        """Test DoTH transform path in batch mode."""
+        stats = WLStatistics(
+            n_scales=4,
+            device=device,
+            wavelet_type="doth",
+            doth_base_radius=1.0,
+        )
+        batch = torch.randn(4, 128, 128, device=device, dtype=torch.float64) * 0.01
+        sigma = 0.02
+
+        results = stats.compute_all_statistics(batch, sigma, compute_mono=False, verbose=False)
+
+        assert results["wavelet_coeffs"].shape == (4, 4, 128, 128)
+        assert results["noise_levels"].shape == (4, 4, 128, 128)
+        assert results["snr"].shape == (4, 4, 128, 128)
+        assert len(results["wavelet_peak_counts"]) == 4
+        assert len(results["wavelet_l1_norms"]) == 4
+        for counts in results["wavelet_peak_counts"]:
+            assert counts.shape == (4, 31)
+
 
 class TestBatchOptimizations:
     """Test suite specifically for optimization correctness."""

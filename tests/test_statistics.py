@@ -186,6 +186,106 @@ class TestWLStatistics:
             stats_cpu.to(torch.device("cuda"))
             assert stats_cpu.device.type == "cuda"
 
+    def test_doth_initialization(self, device):
+        """Test WLStatistics initialization with DoTH transform."""
+        stats = WLStatistics(
+            n_scales=5,
+            device=device,
+            pixel_arcmin=0.5,
+            wavelet_type="doth",
+            doth_base_radius=1.0,
+        )
+
+        assert stats.n_scales == 5
+        assert stats.wavelet_type == "doth"
+        assert stats.transform is not None
+        assert stats.starlet is stats.transform  # backward-compatible alias
+
+    def test_compute_all_statistics_doth(self, device):
+        """Test full statistics pipeline with DoTH transform."""
+        stats = WLStatistics(
+            n_scales=5,
+            device=device,
+            pixel_arcmin=0.5,
+            wavelet_type="doth",
+            doth_base_radius=1.0,
+        )
+
+        kappa = torch.randn(128, 128, device=device) * 0.01
+        sigma = torch.ones(128, 128, device=device) * 0.02
+
+        results = stats.compute_all_statistics(
+            kappa,
+            sigma,
+            min_snr=-2,
+            max_snr=6,
+            n_bins=31,
+            l1_nbins=40,
+            compute_mono=True,
+            verbose=False,
+        )
+
+        assert results["wavelet_coeffs"].shape == (5, 128, 128)
+        assert results["noise_levels"].shape == (5, 128, 128)
+        assert results["snr"].shape == (5, 128, 128)
+        assert len(results["wavelet_peak_counts"]) == 5
+        assert len(results["wavelet_l1_norms"]) == 5
+
+    def test_noiseless_l1_auto_fallback_starlet(self, device):
+        """Noiseless maps should use coeff-space fallback in auto mode."""
+        torch.manual_seed(0)
+        stats = WLStatistics(n_scales=5, device=device, wavelet_type="starlet")
+
+        kappa = torch.randn(128, 128, device=device, dtype=torch.float64)
+        results = stats.compute_all_statistics(
+            kappa,
+            noise_sigma=0.0,
+            compute_mono=False,
+            l1_binning="auto",
+            verbose=False,
+        )
+
+        total_l1 = sum(l1.sum().item() for l1 in results["wavelet_l1_norms"])
+        assert total_l1 > 0.0
+
+    def test_noiseless_l1_auto_fallback_doth(self, device):
+        """Noiseless DoTH maps should use coeff-space fallback in auto mode."""
+        torch.manual_seed(1)
+        stats = WLStatistics(
+            n_scales=5,
+            device=device,
+            wavelet_type="doth",
+            doth_base_radius=1.0,
+        )
+
+        kappa = torch.randn(128, 128, device=device, dtype=torch.float64)
+        results = stats.compute_all_statistics(
+            kappa,
+            noise_sigma=0.0,
+            compute_mono=False,
+            l1_binning="auto",
+            verbose=False,
+        )
+
+        total_l1 = sum(l1.sum().item() for l1 in results["wavelet_l1_norms"])
+        assert total_l1 > 0.0
+
+    def test_noiseless_l1_snr_mode_remains_zero(self, device):
+        """Legacy SNR-only mode should still yield zero L1 for zero noise."""
+        stats = WLStatistics(n_scales=5, device=device, wavelet_type="starlet")
+
+        kappa = torch.randn(64, 64, device=device, dtype=torch.float64)
+        results = stats.compute_all_statistics(
+            kappa,
+            noise_sigma=0.0,
+            compute_mono=False,
+            l1_binning="snr",
+            verbose=False,
+        )
+
+        total_l1 = sum(l1.sum().item() for l1 in results["wavelet_l1_norms"])
+        assert total_l1 == 0.0
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
